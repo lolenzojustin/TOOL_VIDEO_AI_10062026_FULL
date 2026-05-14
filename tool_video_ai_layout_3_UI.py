@@ -89,20 +89,44 @@ class Ui_Widget(object):
         self.cb_browser = self._combo(["GPM", "GoLogin", "Chrome", "Firefox", "Edge", "Brave"])
         lv.addWidget(self.cb_browser)
 
-        # File đường dẫn Proxy
-        lv.addWidget(self._lbl("File đường dẫn Proxy", "grpLabel"))
-        proxy_row = QtWidgets.QHBoxLayout()
-        proxy_row.setSpacing(_s(5, sc))
-        self.le_proxy_file = self._le("Chọn file proxy (.txt)...")
-        self.le_proxy_file.setReadOnly(True)
-        btn_proxy_browse = QtWidgets.QPushButton("📂")
-        btn_proxy_browse.setObjectName("proxyBrowseBtn")
-        btn_proxy_browse.setFixedSize(_s(32, sc), _s(26, sc))
-        btn_proxy_browse.setCursor(QtCore.Qt.PointingHandCursor)
-        self.btn_proxy_browse = btn_proxy_browse
-        proxy_row.addWidget(self.le_proxy_file, 1)
-        proxy_row.addWidget(btn_proxy_browse)
-        lv.addLayout(proxy_row)
+        # Proxy nhập thủ công (thu gọn / mở rộng)
+        lv.addWidget(self._lbl("Danh sách Proxy", "grpLabel"))
+
+        # Nút thu gọn (mặc định hiển thị)
+        self.btn_proxy_collapsed = QtWidgets.QPushButton("📋  Nhấp để nhập proxy...")
+        self.btn_proxy_collapsed.setObjectName("proxyCollapsedBtn")
+        self.btn_proxy_collapsed.setFixedHeight(_s(28, sc))
+        self.btn_proxy_collapsed.setCursor(QtCore.Qt.PointingHandCursor)
+        lv.addWidget(self.btn_proxy_collapsed)
+
+        # Panel mở rộng (ẩn mặc định)
+        self.proxy_expand_panel = QtWidgets.QFrame()
+        self.proxy_expand_panel.setObjectName("proxyExpandPanel")
+        panel_lay = QtWidgets.QVBoxLayout(self.proxy_expand_panel)
+        panel_lay.setContentsMargins(_s(4,sc), _s(4,sc), _s(4,sc), _s(4,sc))
+        panel_lay.setSpacing(_s(4,sc))
+        lbl_proxy_hint = QtWidgets.QLabel()
+        lbl_proxy_hint.setText(
+            '<b>Mỗi dòng 1 proxy:</b> IP:PORT:USER:PASS hoặc IP:PORT.<br>'
+            '<b>Nếu sai/thiếu thì profile sẽ mở theo proxy local của máy.</b>'
+        )
+        lbl_proxy_hint.setObjectName("noteLabel")
+        lbl_proxy_hint.setWordWrap(True)
+        panel_lay.addWidget(lbl_proxy_hint)
+        self.te_proxy_input = QtWidgets.QTextEdit()
+        self.te_proxy_input.setObjectName("proxyTextEdit")
+        self.te_proxy_input.setPlaceholderText(
+            "1.2.3.4:8080:user:pass\n5.6.7.8:3128\n..."
+        )
+        self.te_proxy_input.setFixedHeight(_s(160, sc))
+        panel_lay.addWidget(self.te_proxy_input)
+        self.btn_proxy_close = QtWidgets.QPushButton("✔  Đóng bảng proxy")
+        self.btn_proxy_close.setObjectName("proxyCloseBtn")
+        self.btn_proxy_close.setFixedHeight(_s(28, sc))
+        self.btn_proxy_close.setCursor(QtCore.Qt.PointingHandCursor)
+        panel_lay.addWidget(self.btn_proxy_close)
+        self.proxy_expand_panel.setVisible(False)
+        lv.addWidget(self.proxy_expand_panel)
 
         # Đường dẫn folder
         lv.addWidget(self._lbl("Đường dẫn folder lấy video", "grpLabel"))
@@ -737,13 +761,37 @@ class Ui_Widget(object):
             border: none; color: white; font-size: {fs}px;
         }}
 
-        #proxyBrowseBtn {{
-            background: #1e293b;
+        #proxyCollapsedBtn {{
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1e3a5f, stop:1 #1e293b);
             border: 1px solid #334155;
-            color: #94a3b8; font-size: {_s(14,sc)}px;
+            color: #94a3b8; font-size: {fs_sm}px; font-weight: bold;
+            border-radius: {_s(4,sc)}px; text-align: left;
+            padding-left: {_s(8,sc)}px;
+        }}
+        #proxyCollapsedBtn:hover {{ background: #334155; color: #e2e8f0; }}
+
+        #proxyExpandPanel {{
+            background: #0d1f35;
+            border: 1px solid #1e3a5f;
+            border-radius: {_s(6,sc)}px;
+        }}
+        #proxyTextEdit {{
+            background: #111827;
+            border: 1px solid #1e3a5f;
+            border-radius: {_s(4,sc)}px;
+            color: #e5e7eb;
+            font-size: {fs_sm}px;
+            font-family: 'Consolas', monospace;
+            padding: {_s(4,sc)}px;
+        }}
+        #proxyTextEdit:focus {{ border: 1px solid #38bdf8; }}
+
+        #proxyCloseBtn {{
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #166534, stop:1 #22c55e);
+            border: none; color: white; font-size: {fs_sm}px; font-weight: bold;
             border-radius: {_s(4,sc)}px;
         }}
-        #proxyBrowseBtn:hover {{ background: #334155; color: white; }}
+        #proxyCloseBtn:hover {{ background: #15803d; }}
 
         #analyzeBtn {{
             background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7c3aed, stop:1 #c084fc);
