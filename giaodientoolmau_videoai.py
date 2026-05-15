@@ -7,20 +7,18 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import os
 import time
 import threading
-import requests
 
 # Import các file phụ trợ
 from tool_video_ai_layout_3_UI import Ui_Widget
 from GpmGlobalApi_tuviet import Gpm
 
 class MultiThread(QThread):
-    # Khai báo signal trả về: (Số thứ tự cảnh, trạng thái, dữ liệu N8N trả về)
+    # Khai báo signal trả về: (Số thứ tự cảnh, trạng thái, kết quả)
     record = pyqtSignal(int, str, str)
 
-    def __init__(self, index, api_n8n, api_url_gpm, proxy=""):
+    def __init__(self, index, api_url_gpm, proxy=""):
         super().__init__()
         self.index = index
-        self.api_n8n = api_n8n
         self.api_url_gpm = api_url_gpm  # URL GPM lấy từ giao diện
         self.proxy = proxy               # Proxy cho luồng này (rỗng = dùng proxy local)
         self.is_running = True
@@ -87,33 +85,10 @@ class MultiThread(QThread):
                 # page.wait_for_timeout(3000) 
                 time.sleep(3)  # Dùng sleep thay vì wait_for để dễ dàng ngắt nếu dừng giữa chừng
                 
-                # Kiểm tra dừng trước khi gọi API
-                if not self.is_running:
-                    browser.close()
-                    status = "Đã dừng"
-                    return
-                
-                # 4. Call API N8N
-                self.record.emit(self.index, "Đang gọi API N8N", "-")
-                
-                response = requests.get(
-                    self.api_n8n,
-                    timeout=20
-                )
-                
-                try:
-                    result = response.json()
-                    if isinstance(result, dict) and "content" in result:
-                        response_data = str(result["content"])
-                    else:
-                        response_data = str(result)
-                except Exception:
-                    response_data = response.text
-                
+                # Sau khi tìm kiếm xong, đánh dấu hoàn thành và đóng browser
                 status = "Hoàn thành"
-                # self._stop_event.wait(1000)  # Có thể ngắt ngay khi stop() được gọi
-                print("đang ở đây sau khi gọi API N8N, chuẩn bị đóng browser")
-                time.sleep(8)  # Đợi thêm 8 giây trước khi đóng browser để đảm bảo mọi thứ đã hoàn tất
+                print(f"[Cảnh {self.index}] ✅ Đã tìm kiếm xong, chuẩn bị đóng browser")
+                time.sleep(8)  # Đợi thêm 8 giây trước khi đóng browser
                 browser.close()
                 
         except Exception as e:
@@ -237,7 +212,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 " border: none; color: white; font-weight: bold;"
             )
         else:
-            self.veo3_btn_analyze.setText("🚀  BẮT ĐẦU TẠO VIDEO")
+            self.veo3_btn_analyze.setText("🚀  Bắt đầu tạo video từ tất cả cảnh")
             # Xoá style inline → fallback về QSS gốc (#analyzeBtn)
             self.veo3_btn_analyze.setStyleSheet("")
 
@@ -281,20 +256,6 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập API URL GPM (ví dụ: http://localhost:9495).")
             return
 
-        # Danh sách API N8N cho từng luồng (10 API)
-        api_list = [
-            "https://thangdepzai.devttt.com/webhook/11ca20ab-5425-48b7-8aa2-7b517597f196",
-            "https://thangdepzai.devttt.com/webhook/81a25e7e-6f7b-4d96-9e40-45130a5e3ab7",
-            "https://thangdepzai.devttt.com/webhook/c4dc4bc4-fd95-485d-b638-c9957d6abd0f",
-            "https://thangdepzai.devttt.com/webhook/69fb1066-09b2-40a5-8b02-a5a33c682aa0",
-            "https://thangdepzai.devttt.com/webhook/120fc52b-9b7e-4bcc-a1cd-e6fdcca457c1",
-            "https://thangdepzai.devttt.com/webhook/ee39526e-7f92-4c56-a32e-bd0c0f336009",
-            "https://thangdepzai.devttt.com/webhook/cbc9be64-6fff-4579-83d2-1ba3ce2d079b",
-            "https://thangdepzai.devttt.com/webhook/b8887c04-04f0-4857-b4cb-9d307335f88c",
-            "https://thangdepzai.devttt.com/webhook/ad1d5232-e771-4bee-891a-1b751ef90858",
-            "https://thangdepzai.devttt.com/webhook/3534d74c-722b-4f71-9db7-5fa62614c818"
-        ]
-
         # Đọc danh sách proxy từ ô nhập thủ công trên giao diện
         # Giữ nguyên vị trí từng dòng: luồng i lấy proxy dòng i
         # Chỉ chấp nhận 2 dạng hợp lệ: IP:PORT:USER:PASS hoặc IP:PORT
@@ -336,11 +297,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         for i in range(1, input_soluong + 1):
             # Lấy proxy theo index (dòng i-1 trong file), nếu không có thì dùng proxy local
             proxy = proxy_list[i - 1] if (i - 1) < len(proxy_list) else ""
-            # Gán API N8N theo luồng: luồng 1 dùng API 0, luồng 2 dùng API 1, ..., luồng 10 dùng API 9
-            api_n8n = api_list[i-1]
             thread = MultiThread(
                 index=i,
-                api_n8n=api_n8n,
                 api_url_gpm=input_api_url_gpm,
                 proxy=proxy
             )
@@ -529,6 +487,6 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     window = Manager()
-    window.resize(2560, 1600)
+    window.resize(1920, 1080)
     window.show()
     sys.exit(app.exec_())

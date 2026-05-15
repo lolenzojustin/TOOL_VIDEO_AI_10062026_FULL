@@ -29,9 +29,9 @@ def _get_scale():
     w, h = geom.width(), geom.height()
     dpi = screen.logicalDotsPerInch()
     dpi_scale = dpi / 96.0
-    res_scale = min(w / 1600.0, h / 900.0)
+    res_scale = min(w / 1920.0, h / 1080.0)
     scale = dpi_scale * max(res_scale, 1.0)
-    return max(1.0, min(scale, 1.8))
+    return max(1.0, min(scale, 1.5))
 
 
 def _s(v, sc):
@@ -249,7 +249,7 @@ class Ui_Widget(object):
         layout.setContentsMargins(_s(14,sc), _s(10,sc), _s(14,sc), _s(10,sc))
         layout.setSpacing(_s(8,sc))
 
-        # Top row: language + version + New
+        # Top row: language + version + New + running
         topRow = QtWidgets.QHBoxLayout()
         lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English", "Japanese"])
         lang_cb.setMinimumWidth(_s(220, sc))
@@ -262,15 +262,21 @@ class Ui_Widget(object):
         new_btn = QtWidgets.QPushButton("● New")
         new_btn.setObjectName("newBtn")
         new_btn.setFixedHeight(_s(40, sc))
+        btn_running = QtWidgets.QPushButton("⏱ Đang xử lý 0 luồng")
+        btn_running.setObjectName("actionBtnProcess")
+        btn_running.setFixedHeight(_s(40, sc))
+        btn_running.setCursor(QtCore.Qt.PointingHandCursor)
         topRow.addWidget(lang_cb)
         topRow.addWidget(ver_lb)
         topRow.addWidget(ver_update_btn)
         topRow.addStretch()
         topRow.addWidget(new_btn)
+        topRow.addWidget(btn_running)
         layout.addLayout(topRow)
         setattr(self, f"{prefix}_cb_lang", lang_cb)
         setattr(self, f"{prefix}_btn_update", ver_update_btn)
         setattr(self, f"{prefix}_btn_new", new_btn)
+        setattr(self, f"{prefix}_btn_running", btn_running)
 
         # Link input
         le_link = QtWidgets.QLineEdit()
@@ -288,32 +294,27 @@ class Ui_Widget(object):
         layout.addWidget(le_desc)
         setattr(self, f"{prefix}_le_desc", le_desc)
 
-        # Analyze button
-        btn_analyze = QtWidgets.QPushButton("🚀  BẮT ĐẦU TẠO VIDEO")
+        # Combined button row: Analyze + Prompt + Rerun (1 hàng ngang)
+        btnRow = QtWidgets.QHBoxLayout()
+        btnRow.setSpacing(_s(8, sc))
+        btn_analyze = QtWidgets.QPushButton("🚀  Bắt đầu tạo video từ tất cả cảnh")
         btn_analyze.setObjectName("analyzeBtn")
-        btn_analyze.setFixedHeight(_s(52, sc))
-        layout.addWidget(btn_analyze)
+        btn_analyze.setFixedHeight(_s(46, sc))
+        btn_analyze.setCursor(QtCore.Qt.PointingHandCursor)
+        btnRow.addWidget(btn_analyze, 1)
         setattr(self, f"{prefix}_btn_analyze", btn_analyze)
-
-        # Action buttons row
-        actionRow = QtWidgets.QHBoxLayout()
-        actionRow.setSpacing(_s(8, sc))
         actions = [
-            ("⏱ Đang xử lý 0 luồng",          "actionBtnProcess", f"{prefix}_btn_running"),
-            ("🎬 Ghép Video",               "actionBtnMerge",   f"{prefix}_btn_merge"),
+            ("🎬 Bắt đầu phân tích tạo Prompt",  "actionBtnMerge",   f"{prefix}_btn_merge"),
             ("🔁 Chạy lại cảnh nhất định",  "actionBtnRerun",   f"{prefix}_btn_rerun"),
-            ("✏️ Thêm kịch bản",            "actionBtnAdd",     f"{prefix}_btn_add"),
-            ("⚙️ Khác",                     "actionBtnMore",    f"{prefix}_btn_more"),
         ]
         for text, obj, attr in actions:
             b = QtWidgets.QPushButton(text)
             b.setObjectName(obj)
-            b.setFixedHeight(_s(40, sc))
+            b.setFixedHeight(_s(46, sc))
             b.setCursor(QtCore.Qt.PointingHandCursor)
-            actionRow.addWidget(b)
+            btnRow.addWidget(b, 1)
             setattr(self, attr, b)
-        actionRow.addStretch()
-        layout.addLayout(actionRow)
+        layout.addLayout(btnRow)
 
         # Reference image box
         refBox = QtWidgets.QFrame()
@@ -364,8 +365,8 @@ class Ui_Widget(object):
         sc = self._sc
         card = QtWidgets.QFrame()
         card.setObjectName("sceneCardActive" if active else "sceneCard")
-        card.setMinimumHeight(_s(180, sc))
-        card.setMaximumHeight(_s(210, sc))
+        card.setMinimumHeight(_s(140, sc))
+        card.setMaximumHeight(_s(165, sc))
 
         hl = QtWidgets.QHBoxLayout(card)
         hl.setContentsMargins(_s(10,sc), _s(10,sc), _s(10,sc), _s(10,sc))
@@ -374,7 +375,7 @@ class Ui_Widget(object):
         preview = QtWidgets.QLabel(f"SCENE {idx}")
         preview.setObjectName("previewBox")
         preview.setAlignment(QtCore.Qt.AlignCenter)
-        preview.setFixedSize(_s(220, sc), _s(120, sc))
+        preview.setFixedSize(_s(170, sc), _s(90, sc))
 
         vr = QtWidgets.QVBoxLayout()
         vr.setSpacing(_s(4, sc))
@@ -387,7 +388,7 @@ class Ui_Widget(object):
 
         prompt = QtWidgets.QTextEdit()
         prompt.setObjectName("promptBox")
-        prompt.setFixedHeight(_s(70, sc))
+        prompt.setFixedHeight(_s(54, sc))
         prompt.setPlainText(
             "anime style, vibrant colors, clean outlines, soft cel shading, "
             "detailed eyes, studio-quality anime frame, high-clarity character design..."
@@ -412,7 +413,7 @@ class Ui_Widget(object):
         layout.setContentsMargins(_s(14,sc), _s(10,sc), _s(14,sc), _s(10,sc))
         layout.setSpacing(_s(8,sc))
 
-        # ── Top row: language + version + New (giống Veo3)
+        # ── Top row: language + version + New + running (giống Veo3)
         topRow = QtWidgets.QHBoxLayout()
         kol_lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English", "Japanese"])
         kol_lang_cb.setMinimumWidth(_s(220, sc))
@@ -425,15 +426,21 @@ class Ui_Widget(object):
         kol_new_btn = QtWidgets.QPushButton("● New")
         kol_new_btn.setObjectName("newBtn")
         kol_new_btn.setFixedHeight(_s(40, sc))
+        kol_btn_running = QtWidgets.QPushButton("⏱ Đang xử lý 0 luồng")
+        kol_btn_running.setObjectName("actionBtnProcess")
+        kol_btn_running.setFixedHeight(_s(40, sc))
+        kol_btn_running.setCursor(QtCore.Qt.PointingHandCursor)
         topRow.addWidget(kol_lang_cb)
         topRow.addWidget(kol_ver_lb)
         topRow.addWidget(kol_ver_update_btn)
         topRow.addStretch()
         topRow.addWidget(kol_new_btn)
+        topRow.addWidget(kol_btn_running)
         layout.addLayout(topRow)
         self.kol_cb_lang = kol_lang_cb
         self.kol_btn_update = kol_ver_update_btn
         self.kol_btn_new = kol_new_btn
+        self.kol_btn_running = kol_btn_running
 
         # ── Desc input (giống Veo3)
         kol_le_desc = QtWidgets.QLineEdit()
@@ -443,32 +450,27 @@ class Ui_Widget(object):
         layout.addWidget(kol_le_desc)
         self.kol_le_desc = kol_le_desc
 
-        # ── Analyze button (giống Veo3)
-        kol_btn_analyze = QtWidgets.QPushButton("🚀  BẮT ĐẦU TẠO VIDEO")
+        # ── Combined button row: Analyze + Prompt + Rerun (1 hàng ngang)
+        btnRow = QtWidgets.QHBoxLayout()
+        btnRow.setSpacing(_s(8, sc))
+        kol_btn_analyze = QtWidgets.QPushButton("🚀  Bắt đầu tạo video từ tất cả cảnh")
         kol_btn_analyze.setObjectName("kolAnalyzeBtn")
-        kol_btn_analyze.setFixedHeight(_s(52, sc))
-        layout.addWidget(kol_btn_analyze)
+        kol_btn_analyze.setFixedHeight(_s(46, sc))
+        kol_btn_analyze.setCursor(QtCore.Qt.PointingHandCursor)
+        btnRow.addWidget(kol_btn_analyze, 1)
         self.kol_btn_analyze = kol_btn_analyze
-
-        # ── Action buttons row (giống Veo3)
-        actionRow = QtWidgets.QHBoxLayout()
-        actionRow.setSpacing(_s(8, sc))
         kol_actions = [
-            ("⏱ Đang xử lý 0 luồng",         "actionBtnProcess", "kol_btn_running"),
-            ("🎬 Ghép Video",              "actionBtnMerge",   "kol_btn_merge"),
+            ("🎬 Bắt đầu phân tích tạo Prompt", "actionBtnMerge",   "kol_btn_merge"),
             ("🔁 Chạy lại cảnh nhất định", "actionBtnRerun",   "kol_btn_rerun"),
-            ("✏️ Thêm kịch bản",           "actionBtnAdd",     "kol_btn_add"),
-            ("⚙️ Khác",                    "actionBtnMore",    "kol_btn_more"),
         ]
         for text, obj, attr in kol_actions:
             b = QtWidgets.QPushButton(text)
             b.setObjectName(obj)
-            b.setFixedHeight(_s(40, sc))
+            b.setFixedHeight(_s(46, sc))
             b.setCursor(QtCore.Qt.PointingHandCursor)
-            actionRow.addWidget(b)
+            btnRow.addWidget(b, 1)
             setattr(self, attr, b)
-        actionRow.addStretch()
-        layout.addLayout(actionRow)
+        layout.addLayout(btnRow)
 
         # ══════════════════════════════════════════════
         # ── KOL SELECTOR PANEL (phần đặc trưng của tab này)
@@ -668,10 +670,10 @@ class Ui_Widget(object):
     # ─── QSS ───
     def _apply_qss(self):
         sc = self._sc
-        fs    = _s(15, sc)
-        fs_sm = _s(13, sc)
-        fs_lg = _s(18, sc)
-        fs_tab= _s(17, sc)
+        fs    = _s(13, sc)
+        fs_sm = _s(11, sc)
+        fs_lg = _s(16, sc)
+        fs_tab= _s(15, sc)
         r     = _s(6, sc)
         tp    = _s(10, sc)
         th    = _s(10, sc)
@@ -804,10 +806,12 @@ class Ui_Widget(object):
         #proxyCloseBtn:hover {{ background: #15803d; }}
 
         #analyzeBtn {{
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7c3aed, stop:1 #c084fc);
-            border: none; color: white; font-size: {_s(17,sc)}px;
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #4c1d95, stop:1 #8b5cf6);
+            border: none; color: white; font-size: {_s(15,sc)}px;
+            border-radius: {_s(10,sc)}px;
+            font-weight: bold;
         }}
-        #analyzeBtn:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #6d28d9, stop:1 #a855f7); }}
+        #analyzeBtn:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #3b0764, stop:1 #7c3aed); }}
 
         #newBtn {{
             background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7c3aed, stop:1 #c084fc);
@@ -832,24 +836,24 @@ class Ui_Widget(object):
         #actionBtnProcess:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1e40af, stop:1 #2563eb); }}
 
         #actionBtnMerge {{
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7c3aed, stop:1 #a855f7);
-            border: 1px solid #8b5cf6;
-            color: white; font-size: {_s(12,sc)}px;
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #881337, stop:1 #fb7185);
+            border: 1px solid #e11d48;
+            color: white; font-size: {_s(13,sc)}px;
             padding: {_s(3,sc)}px {_s(10,sc)}px;
             border-radius: {_s(6,sc)}px;
             font-weight: bold;
         }}
-        #actionBtnMerge:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #6d28d9, stop:1 #9333ea); }}
+        #actionBtnMerge:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #6f0f2c, stop:1 #e11d48); }}
 
         #actionBtnRerun {{
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0e7490, stop:1 #06b6d4);
-            border: 1px solid #0891b2;
-            color: white; font-size: {_s(12,sc)}px;
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #92400e, stop:1 #f97316);
+            border: 1px solid #ea580c;
+            color: white; font-size: {_s(13,sc)}px;
             padding: {_s(3,sc)}px {_s(10,sc)}px;
             border-radius: {_s(6,sc)}px;
             font-weight: bold;
         }}
-        #actionBtnRerun:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0c5f73, stop:1 #0891b2); }}
+        #actionBtnRerun:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7c2d12, stop:1 #ea580c); }}
 
         #actionBtnAdd {{
             background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #166534, stop:1 #22c55e);
