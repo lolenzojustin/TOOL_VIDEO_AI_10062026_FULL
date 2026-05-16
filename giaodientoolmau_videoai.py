@@ -7,6 +7,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 import os
 import time
 import threading
+import requests
+
 
 # Import các file phụ trợ
 from tool_video_ai_layout_3_UI import Ui_Widget
@@ -16,11 +18,14 @@ class MultiThread(QThread):
     # Khai báo signal trả về: (Số thứ tự cảnh, trạng thái, kết quả)
     record = pyqtSignal(int, str, str)
 
-    def __init__(self, index, api_url_gpm, proxy=""):
+    def __init__(self, index, api_url_gpm, proxy="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0"):
         super().__init__()
         self.index = index
         self.api_url_gpm = api_url_gpm  # URL GPM lấy từ giao diện
         self.proxy = proxy               # Proxy cho luồng này (rỗng = dùng proxy local)
+        self.prompt_text = prompt_text
+        self.win_size = win_size
+        self.win_pos = win_pos
         self.is_running = True
         self._stop_event = threading.Event()  # Event để dừng sleep ngay lập tức
 
@@ -38,11 +43,11 @@ class MultiThread(QThread):
             self.record.emit(self.index, "Đang tạo profile GPM", "-")
             if self.proxy:
                 # Có proxy → dùng create_profile với proxy (format IP:PORT:USER:PASS hoặc IP:PORT)
-                profile_id = gpm.create_profile(apiurl_Gpm=self.api_url_gpm, proxy=self.proxy)
+                profile_id = gpm.create_profile(apiurl_Gpm=self.api_url_gpm, proxy=self.proxy, win_size=self.win_size)
                 print(f"[Cảnh {self.index}] 🌐 Dùng proxy: {self.proxy}")
             else:
                 # Không có proxy hoặc proxy sai định dạng → mở bằng proxy local
-                profile_id = gpm.create_profile_2(apiurl_Gpm=self.api_url_gpm)
+                profile_id = gpm.create_profile_2(apiurl_Gpm=self.api_url_gpm, win_size=self.win_size)
                 print(f"[Cảnh {self.index}] 🏠 Dùng proxy local")
             
             # 2. Mở Profile GPM
@@ -50,7 +55,7 @@ class MultiThread(QThread):
                 status = "Đã dừng"
                 return
             self.record.emit(self.index, "Đang mở GPM", "-")
-            remote_addr = gpm.open_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id)
+            remote_addr = gpm.open_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id, win_pos=self.win_pos, win_size=self.win_size)
             
             # Kiểm tra kết quả open_profile
             if not remote_addr:
@@ -67,6 +72,13 @@ class MultiThread(QThread):
                 # Lấy tab mặc định hoặc tạo tab mới
                 page = context.pages[0] if context.pages else context.new_page()
                 
+                # Áp dụng cứng viewport size cho Playwright để hiển thị chính xác
+                try:
+                    w, h = map(int, self.win_size.split(","))
+                    page.set_viewport_size({"width": w, "height": h})
+                except Exception:
+                    pass
+                
                 # Mở google và nhập "test cảnh"
                 page.goto("https://www.google.com")
                 
@@ -79,7 +91,7 @@ class MultiThread(QThread):
                 # Chọn thẻ input search của Google
                 search_input = page.locator('textarea[name="q"], input[name="q"]').first
                 search_input.wait_for(state="visible", timeout=15000)
-                search_input.fill("test cảnh")
+                search_input.fill(self.prompt_text)
                 page.keyboard.press("Enter")
                 # Đợi một lát để trang load kết quả
                 # page.wait_for_timeout(3000) 
@@ -148,6 +160,33 @@ class MultiThread(QThread):
         self.is_running = False
         self._stop_event.set()  # Ngắt bất kỳ _stop_event.wait() nào đang bị block
 
+class PromptApiThread(QThread):
+    finished = pyqtSignal()
+    prompt_result = pyqtSignal(int, str)
+
+    def __init__(self, urls):
+        super().__init__()
+        self.urls = urls
+
+    def run(self):
+        for index, url in enumerate(self.urls, start=1):
+            try:
+                print(f"[Phân tích Prompt] Đang gọi API {index}: {url}")
+                response = requests.get(url, timeout=15)
+                
+                try:
+                    data = response.json()
+                    content = data.get("content", "")
+                    if content:
+                        self.prompt_result.emit(index, content)
+                except ValueError:
+                    print(f"[Phân tích Prompt] Không thể parse JSON từ API {index}")
+
+                print(f"[Phân tích Prompt] Hoàn thành API {index} - Status: {response.status_code}")
+            except Exception as e:
+                print(f"[Phân tích Prompt] Lỗi gọi API {index}: {e}")
+        self.finished.emit()
+
 class Manager(QtWidgets.QMainWindow, Ui_Widget):
     def __init__(self):
         super().__init__()
@@ -160,6 +199,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "ASYNC_API_KEY": self.le_api_key,
             "API_URL_GPM": self.le_api_url_gpm,
             "BROWSER": self.cb_browser,
+            "WIN_SIZE": self.cb_win_size,
             "VIDEO_FOLDER": self.le_folder,
             "STYLE": self.cb_style,
             "LANGUAGE": self.cb_language,
@@ -195,8 +235,27 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.btn_proxy_collapsed.clicked.connect(self._toggle_proxy_panel)
         self.btn_proxy_close.clicked.connect(self._toggle_proxy_panel)
 
+        # Danh sách webhook API
+        self.WEBHOOK_URLS = [
+            "https://thangdepzai.devttt.com/webhook/11ca20ab-5425-48b7-8aa2-7b517597f196",
+            "https://thangdepzai.devttt.com/webhook/81a25e7e-6f7b-4d96-9e40-45130a5e3ab7",
+            "https://thangdepzai.devttt.com/webhook/c4dc4bc4-fd95-485d-b638-c9957d6abd0f",
+            "https://thangdepzai.devttt.com/webhook/69fb1066-09b2-40a5-8b02-a5a33c682aa0",
+            "https://thangdepzai.devttt.com/webhook/120fc52b-9b7e-4bcc-a1cd-e6fdcca457c1",
+            "https://thangdepzai.devttt.com/webhook/ee39526e-7f92-4c56-a32e-bd0c0f336009",
+            "https://thangdepzai.devttt.com/webhook/cbc9be64-6fff-4579-83d2-1ba3ce2d079b",
+            "https://thangdepzai.devttt.com/webhook/b8887c04-04f0-4857-b4cb-9d307335f88c",
+            "https://thangdepzai.devttt.com/webhook/ad1d5232-e771-4bee-891a-1b751ef90858",
+            "https://thangdepzai.devttt.com/webhook/3534d74c-722b-4f71-9db7-5fa62614c818"
+        ]
+        self.prompt_thread = None
+
         # Kết nối sự kiện Click cho nút "BẮT ĐẦU TẠO VIDEO" bên tab Veo3
         self.veo3_btn_analyze.clicked.connect(self.startThreadVeo3)
+        
+        # Kết nối sự kiện Click cho nút "Bắt đầu phân tích tạo Prompt" cho cả 2 tab
+        self.veo3_btn_merge.clicked.connect(self.analyzePrompts)
+        self.kol_btn_merge.clicked.connect(self.analyzePrompts)
         
         # Kết nối nút cập nhật phiên bản cho cả hai tab
         self.veo3_btn_update.clicked.connect(self._update_version)
@@ -228,6 +287,62 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.veo3_btn_running.setText("⏱ Đang xử lý 0 luồng")
         self._set_veo3_btn_running(False)
         QtWidgets.QApplication.processEvents()  # Buộc UI render ngay
+
+    def _set_prompt_btn_running(self, is_running):
+        """Đổi trạng thái nút Bắt đầu phân tích tạo Prompt."""
+        if is_running:
+            text = "⏳ Đang phân tích tạo prompt..."
+            style = (
+                "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+                " stop:0 #9333ea, stop:1 #d8b4fe);"
+                " border: none; color: white; font-weight: bold;"
+            )
+            self.veo3_btn_merge.setText(text)
+            self.veo3_btn_merge.setStyleSheet(style)
+            self.kol_btn_merge.setText(text)
+            self.kol_btn_merge.setStyleSheet(style)
+        else:
+            text = "🎬 Bắt đầu phân tích tạo Prompt"
+            self.veo3_btn_merge.setText(text)
+            self.veo3_btn_merge.setStyleSheet("")
+            self.kol_btn_merge.setText(text)
+            self.kol_btn_merge.setStyleSheet("")
+
+    def analyzePrompts(self):
+        try:
+            input_soluong = int(self.cb_scene_count.currentText())
+        except ValueError:
+            QMessageBox.warning(self, "Lỗi", "Số lượng cảnh không hợp lệ.")
+            return
+
+        if input_soluong <= 0:
+            return
+
+        # Lấy số lượng API theo số cảnh chọn (tối đa bằng độ dài mảng URL)
+        urls_to_call = self.WEBHOOK_URLS[:input_soluong]
+
+        # Khởi chạy thread để call API không làm đơ UI
+        if self.prompt_thread and self.prompt_thread.isRunning():
+            QMessageBox.warning(self, "Cảnh báo", "Đang phân tích tạo prompt, vui lòng đợi!")
+            return
+
+        print(f"[Manager] Bắt đầu gọi {len(urls_to_call)} API phân tích prompt...")
+        self._set_prompt_btn_running(True)
+        QtWidgets.QApplication.processEvents()
+
+        self.prompt_thread = PromptApiThread(urls_to_call)
+        self.prompt_thread.prompt_result.connect(self._on_prompt_result)
+        self.prompt_thread.finished.connect(self._on_prompt_thread_finished)
+        self.prompt_thread.start()
+
+    def _on_prompt_result(self, index, content):
+        """Cập nhật dữ liệu prompt nhận được từ API lên textbox của cảnh tương ứng."""
+        if 1 <= index <= len(self.scene_prompt_boxes):
+            self.scene_prompt_boxes[index - 1].setPlainText(content)
+
+    def _on_prompt_thread_finished(self):
+        self._set_prompt_btn_running(False)
+        QMessageBox.information(self, "Thành công", "Đã hoàn thành gửi yêu cầu phân tích tạo Prompt!")
 
     def startThreadVeo3(self):
         # Nếu đang có luồng chạy → bấm nút = dừng tất cả
@@ -293,14 +408,46 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
         self.threads = []
 
+        input_win_size_raw = self.cb_win_size.currentText()
+        input_win_size = input_win_size_raw.replace("px", "").replace(":", ",")
+        
+        try:
+            win_w, win_h = map(int, input_win_size.split(","))
+        except:
+            win_w, win_h = 800, 800
+
+        # Lấy kích thước màn hình
+        screen_rect = QtWidgets.QApplication.desktop().screenGeometry()
+        screen_width = screen_rect.width()
+        cols = max(1, screen_width // win_w)
+
         # Khởi tạo GPM theo đúng số "cảnh" đã chọn
         for i in range(1, input_soluong + 1):
             # Lấy proxy theo index (dòng i-1 trong file), nếu không có thì dùng proxy local
             proxy = proxy_list[i - 1] if (i - 1) < len(proxy_list) else ""
+            
+            # Tính toán vị trí hiển thị luồng
+            idx = i - 1
+            col = idx % cols
+            row = idx // cols
+            pos_x = col * win_w
+            pos_y = row * win_h
+            win_pos = f"{pos_x},{pos_y}"
+            
+            # Lấy nội dung prompt hiển thị trên giao diện của cảnh tương ứng
+            current_prompt = "test cảnh"
+            if (i - 1) < len(self.scene_prompt_boxes):
+                text = self.scene_prompt_boxes[i - 1].toPlainText().strip()
+                if text:
+                    current_prompt = text
+                    
             thread = MultiThread(
                 index=i,
                 api_url_gpm=input_api_url_gpm,
-                proxy=proxy
+                proxy=proxy,
+                prompt_text=current_prompt,
+                win_size=input_win_size,
+                win_pos=win_pos
             )
 
             # Lắng nghe dữ liệu bắn về từ Thread để update log

@@ -20,7 +20,8 @@ def get_next_port():
 class Gpm:
     def __init__(self) -> None:
         pass
-    def get_new_payload(self,proxy):
+    def get_new_payload(self,proxy, win_size="1280,800"):
+        res = win_size.replace(",", "x")
         payload = {
             "name": "Test profile from api",
             "group_id": None,
@@ -28,6 +29,7 @@ class Gpm:
             "browser_type": 1,                # 1: Chromium, 2: Firefox
             "browser_version": "147.0.7727.56",
             "os_type": 1,                     # 1: Windows, 2: MacOS, 3: Linux
+            "screen_resolution": res,
             "custom_user_agent": None,
             "task_bar_title": "abc",
             "webrtc_mode": None,
@@ -45,7 +47,8 @@ class Gpm:
             "fixed_language": None
         }
         return payload
-    def get_new_payload_2(self):
+    def get_new_payload_2(self, win_size="1280,800"):
+        res = win_size.replace(",", "x")
         payload = {
             "name": "Test profile from api",
             "group_id": None,
@@ -53,6 +56,7 @@ class Gpm:
             "browser_type": 1,                # 1: Chromium, 2: Firefox
             "browser_version": "147.0.7727.56",
             "os_type": 1,                     # 1: Windows, 2: MacOS, 3: Linux
+            "screen_resolution": res,
             "custom_user_agent": None,
             "task_bar_title": "abc",
             "webrtc_mode": None,
@@ -96,8 +100,8 @@ class Gpm:
 
         print("thông tin profile:", response)
         return response
-    def create_profile(self,apiurl_Gpm,proxy):
-        new_payload = self.get_new_payload(proxy)
+    def create_profile(self,apiurl_Gpm,proxy, win_size="1280,800"):
+        new_payload = self.get_new_payload(proxy, win_size)
         headers = {
         "Content-Type": "application/json"
     }
@@ -111,8 +115,8 @@ class Gpm:
         print("tạo id_profile là",id_profile)
         return id_profile
     
-    def create_profile_2(self,apiurl_Gpm):
-        new_payload = self.get_new_payload_2()
+    def create_profile_2(self,apiurl_Gpm, win_size="1280,800"):
+        new_payload = self.get_new_payload_2(win_size)
         headers = {
         "Content-Type": "application/json"
     }
@@ -263,4 +267,4 @@ class Gpm:
 #     print("đã xóa profile vừa tạo")
 #     time.sleep(1000)
 
-# test5
+# test6

@@ -130,6 +130,11 @@ class Ui_Widget(object):
         self.proxy_expand_panel.setVisible(False)
         lv.addWidget(self.proxy_expand_panel)
 
+        # Kích thước luồng (GPM window size)
+        lv.addWidget(self._lbl("Kích thước khi mở luồng", "grpLabel"))
+        self.cb_win_size = self._combo([f"{s}px:{s}px" for s in range(400, 1600, 100)])
+        lv.addWidget(self.cb_win_size)
+
         # Đường dẫn folder
         lv.addWidget(self._lbl("Đường dẫn folder lấy video", "grpLabel"))
         self.le_folder = self._le("C:\\Users\\Admin\\Desktop\\VIDEO AI")
