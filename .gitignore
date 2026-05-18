@@ -1,6 +1,7 @@
-venv/
-__pycache__/
-*.pyc
-.env
 config.env
-accounts.txt
+venv/
+dist/
+build/
+__pycache__/
+*.spec
+*.zip

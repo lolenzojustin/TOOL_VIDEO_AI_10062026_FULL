@@ -173,11 +173,9 @@ class MultiThread(QThread):
 
 class PromptApiThread(QThread):
     finished = pyqtSignal()
-    prompt_result = pyqtSignal(int, str)
 
-    def __init__(self, urls, payload, post_url):
+    def __init__(self, payload, post_url):
         super().__init__()
-        self.urls = urls
         self.payload = payload
         self.post_url = post_url
 
@@ -189,24 +187,6 @@ class PromptApiThread(QThread):
             print(f"[Phân tích Prompt] Đã gửi POST thành công - Status: {response_post.status_code}")
         except Exception as e:
             print(f"[Phân tích Prompt] Lỗi gọi API POST N8N: {e}")
-
-        # 2. Gọi các API GET theo số lượng cảnh để nhận kết quả cho giao diện
-        for index, url in enumerate(self.urls, start=1):
-            try:
-                print(f"[Phân tích Prompt] Đang gọi API GET {index}: {url}")
-                response = requests.get(url, timeout=15)
-                
-                try:
-                    data = response.json()
-                    content = data.get("content", "")
-                    if content:
-                        self.prompt_result.emit(index, content)
-                except ValueError:
-                    print(f"[Phân tích Prompt] Không thể parse JSON từ API GET {index}")
-
-                print(f"[Phân tích Prompt] Hoàn thành API GET {index} - Status: {response.status_code}")
-            except Exception as e:
-                print(f"[Phân tích Prompt] Lỗi gọi API GET {index}: {e}")
                 
         self.finished.emit()
 
@@ -258,19 +238,6 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.btn_proxy_collapsed.clicked.connect(self._toggle_proxy_panel)
         self.btn_proxy_close.clicked.connect(self._toggle_proxy_panel)
 
-        # Danh sách webhook API
-        self.WEBHOOK_URLS = [
-            "https://thangdepzai.devttt.com/webhook/11ca20ab-5425-48b7-8aa2-7b517597f196",
-            "https://thangdepzai.devttt.com/webhook/81a25e7e-6f7b-4d96-9e40-45130a5e3ab7",
-            "https://thangdepzai.devttt.com/webhook/c4dc4bc4-fd95-485d-b638-c9957d6abd0f",
-            "https://thangdepzai.devttt.com/webhook/69fb1066-09b2-40a5-8b02-a5a33c682aa0",
-            "https://thangdepzai.devttt.com/webhook/120fc52b-9b7e-4bcc-a1cd-e6fdcca457c1",
-            "https://thangdepzai.devttt.com/webhook/ee39526e-7f92-4c56-a32e-bd0c0f336009",
-            "https://thangdepzai.devttt.com/webhook/cbc9be64-6fff-4579-83d2-1ba3ce2d079b",
-            "https://thangdepzai.devttt.com/webhook/b8887c04-04f0-4857-b4cb-9d307335f88c",
-            "https://thangdepzai.devttt.com/webhook/ad1d5232-e771-4bee-891a-1b751ef90858",
-            "https://thangdepzai.devttt.com/webhook/3534d74c-722b-4f71-9db7-5fa62614c818"
-        ]
         self.prompt_thread = None
 
         # Kết nối sự kiện Click cho nút "BẮT ĐẦU TẠO VIDEO" bên tab Veo3
@@ -346,13 +313,12 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             QMessageBox.warning(self, "Cảnh báo", "Đang phân tích tạo prompt, vui lòng đợi!")
             return
 
-        urls_to_call = self.WEBHOOK_URLS[:input_soluong]
         api_url = "https://n8n.aiplt.io.vn/webhook/webhook_get_data_tool"
-        print(f"[Manager] Bắt đầu gọi {len(urls_to_call)} API (GET) và 1 API POST...")
+        print(f"[Manager] Bắt đầu gọi 1 API POST...")
         self._set_prompt_btn_running(True)
         QtWidgets.QApplication.processEvents()
 
-        # Thu thập 8 thông tin từ UI
+        # Thu thập 9 thông tin từ UI
         payload = {
             "link_youtube": self.veo3_le_link.text().strip() if hasattr(self, 'veo3_le_link') else "",
             "mo_ta_them": self.veo3_le_desc.text().strip() if hasattr(self, 'veo3_le_desc') else "",
@@ -365,15 +331,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "so_canh": input_soluong
         }
 
-        self.prompt_thread = PromptApiThread(urls_to_call, payload, api_url)
-        self.prompt_thread.prompt_result.connect(self._on_prompt_result)
+        self.prompt_thread = PromptApiThread(payload, api_url)
         self.prompt_thread.finished.connect(self._on_prompt_thread_finished)
         self.prompt_thread.start()
-
-    def _on_prompt_result(self, index, content):
-        """Cập nhật dữ liệu prompt nhận được từ API lên textbox của cảnh tương ứng."""
-        if 1 <= index <= len(self.scene_prompt_boxes):
-            self.scene_prompt_boxes[index - 1].setPlainText(content)
 
     def _on_prompt_thread_finished(self):
         self._set_prompt_btn_running(False)
