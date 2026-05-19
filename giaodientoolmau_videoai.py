@@ -101,6 +101,15 @@ class MultiThread(QThread):
                 except Exception as e:
                     print(f"[Cảnh {self.index}] Lỗi khi bấm Dự án mới: {e}")
                 
+                # Kiểm tra popup "Bắt đầu" (nếu có)
+                try:
+                    start_btn = page.locator('button:has-text("Bắt đầu")').last
+                    start_btn.wait_for(state="visible", timeout=3000)
+                    start_btn.click()
+                    print(f"[Cảnh {self.index}] Đã bấm 'Bắt đầu' từ thông báo popup.")
+                except Exception:
+                    pass
+
                 # Kiểm tra dừng
                 self._check_stop()
                 
@@ -182,6 +191,7 @@ class MultiThread(QThread):
                     timeout = 300  # 300 giây
                     elapsed = 0
                     has_started_generating = False
+                    disappear_count = 0  # Biến đếm thời gian khi mất tiến trình
                     
                     while elapsed < timeout:
                         self._check_stop()
@@ -203,19 +213,24 @@ class MultiThread(QThread):
                         # 2. Kiểm tra dấu hiệu đang tạo (thường có chữ 1%, 5%... hoặc progressbar)
                         progress_locator = page.locator('text=/^\\d{1,3}%$/').first
                         progressbar_locator = page.get_by_role("progressbar").first
+                        queue_locator = page.locator('text="Đang trong hàng đợi", text="In queue"').first
                         
-                        is_generating = progress_locator.is_visible() or progressbar_locator.is_visible()
+                        is_generating = progress_locator.is_visible() or progressbar_locator.is_visible() or queue_locator.is_visible()
                         
                         if is_generating:
                             if not has_started_generating:
                                 print(f"[Cảnh {self.index}] Hệ thống đang trong quá trình render video...")
                             has_started_generating = True
+                            disappear_count = 0  # Đặt lại bộ đếm khi thấy tiến trình
                         else:
                             # Nếu không thấy dấu hiệu đang tạo nữa
                             if has_started_generating:
-                                # Trước đó đang tạo mà giờ hết -> Đã hoàn thành!
-                                print(f"[Cảnh {self.index}] Đã tạo xong video (tiến trình render đã biến mất).")
-                                break
+                                disappear_count += 2
+                                if disappear_count >= 16:  # Chờ 16 giây để chắc chắn tiến trình không quay lại
+                                    print(f"[Cảnh {self.index}] Đã tạo xong video (tiến trình render đã biến mất hoàn toàn).")
+                                    break
+                                else:
+                                    print(f"[Cảnh {self.index}] Tạm thời mất dấu tiến trình render, chờ thêm... ({disappear_count}/16s)")
                             else:
                                 # Nếu chờ hơn 60s mà vẫn chưa thấy bắt đầu tạo -> thoát để tránh treo luồng
                                 if elapsed > 60:
@@ -229,8 +244,104 @@ class MultiThread(QThread):
                     if isinstance(e, InterruptedError): raise
                     print(f"[Cảnh {self.index}] Lỗi trong vòng lặp chờ kết quả: {e}")
                 
-                # Bước 6: Sau khi video tạo xong thì đợi thêm 55 giây rồi mới kết thúc quy trình
-                print(f"[Cảnh {self.index}] Đang đợi thêm 55 giây sau khi tạo xong...")
+                # Bước 6: Sau khi video tạo xong thì tải video về máy
+                try:
+                    print(f"[Cảnh {self.index}] Đang tiến hành tải video về máy...")
+                    
+                    # Chuẩn bị tên file và thư mục
+                    save_dir = os.path.join(os.getcwd(), "videos_da_tao")
+                    if not os.path.exists(save_dir):
+                        os.makedirs(save_dir)
+                        
+                    safe_prompt = re.sub(r'[\\/*?:"<>|]', "", self.prompt_text)
+                    safe_prompt = safe_prompt[:30].strip() if safe_prompt else "video"
+                    filename = f"canh_{self.index}_{safe_prompt}.mp4"
+                    save_path = os.path.join(save_dir, filename)
+
+                    # Cách 1: Thử dùng Javascript để đọc dữ liệu video (Fetch Blob -> Base64)
+                    js_success = False
+                    try:
+                        has_video = page.evaluate("!!document.querySelector('video')")
+                        if has_video:
+                            print(f"[Cảnh {self.index}] Tìm thấy thẻ video, đang trích xuất dữ liệu trực tiếp...")
+                            # Tăng timeout cho đoạn JS fetch (video có thể lớn)
+                            base64_data = page.evaluate("""
+                                async () => {
+                                    let v = document.querySelector('video');
+                                    let url = v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
+                                    if (!url) throw new Error("Không tìm thấy URL trong thẻ video");
+                                    
+                                    // Fetch dữ liệu từ blob hoặc url
+                                    let response = await fetch(url);
+                                    let blob = await response.blob();
+                                    
+                                    // Chuyển blob thành chuỗi base64
+                                    return new Promise((resolve, reject) => {
+                                        let reader = new FileReader();
+                                        reader.onloadend = () => resolve(reader.result);
+                                        reader.onerror = reject;
+                                        reader.readAsDataURL(blob);
+                                    });
+                                }
+                            """)
+                            
+                            if base64_data and "," in base64_data:
+                                import base64
+                                header, encoded = base64_data.split(",", 1)
+                                with open(save_path, "wb") as f:
+                                    f.write(base64.b64decode(encoded))
+                                print(f"[Cảnh {self.index}] ✅ Đã lưu video thành công (qua JS fetch): {save_path}")
+                                js_success = True
+                    except Exception as js_err:
+                        print(f"[Cảnh {self.index}] JS extraction thất bại ({js_err}), chuyển sang tìm nút UI...")
+
+                    # Cách 2: Nếu JS thất bại, tìm nút tải xuống trên giao diện
+                    if not js_success:
+                        # Hover vào thẻ video để hiện các nút chức năng (nếu có)
+                        try:
+                            page.locator('video, [data-type="video-result"], [role="application"]').last.hover(timeout=3000)
+                            page.wait_for_timeout(1000)
+                        except:
+                            pass
+                        
+                        # Thử click nút 3 chấm (More options) nếu nút Tải bị ẩn bên trong
+                        try:
+                            more_options = page.locator('button[aria-label="Tùy chọn khác"], button[aria-label="More options"], button:has-text("⋮")').last
+                            if more_options.is_visible():
+                                more_options.click(timeout=2000)
+                                page.wait_for_timeout(1000)
+                        except:
+                            pass
+
+                        # Các selector phổ biến của nút Tải xuống
+                        locators = [
+                            'button[aria-label*="ownload"]',
+                            'button[aria-label*="ải xuống"]',
+                            '[role="button"][aria-label*="ownload"]',
+                            '[role="button"][aria-label*="ải xuống"]',
+                            'button[title*="ownload"]',
+                            'button[title*="ải xuống"]',
+                            'a[download]',
+                            'button:has-text("Tải xuống")',
+                            'button:has-text("Lưu")',
+                            'button:has-text("Save")',
+                            '[data-action="download"]'
+                        ]
+                        download_btn = page.locator(", ".join(locators)).first
+                        
+                        print(f"[Cảnh {self.index}] Đang chờ nhấp vào nút tải trên giao diện...")
+                        with page.expect_download(timeout=20000) as download_info:
+                            download_btn.click(timeout=10000, force=True)
+                        
+                        download = download_info.value
+                        download.save_as(save_path)
+                        print(f"[Cảnh {self.index}] ✅ Đã tải video thành công (qua nút UI): {save_path}")
+
+                except Exception as e:
+                    print(f"[Cảnh {self.index}] ❌ Lỗi khi tải video: {e}")
+
+                # Bước 7: Đợi thêm 55 giây rồi mới kết thúc quy trình
+                print(f"[Cảnh {self.index}] Đang đợi thêm 55 giây sau khi tải xong...")
                 if self._stop_event.wait(55): raise InterruptedError("Đã dừng")
                 
                 # Sau khi xong, đánh dấu hoàn thành và đóng browser
@@ -678,7 +789,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         
         # Nếu luồng hoàn tất, bị lỗi, hoặc bị dừng thì giảm bộ đếm luồng đang chạy
         if status == "Hoàn thành" or status.startswith("Lỗi") or status == "Đã dừng":
-            if status == "Hoàn thành" and response_data:
+            if status == "Hoàn thành" and response_data and response_data != "-":
                 # Cập nhật text prompt cho cảnh tương ứng nếu có dữ liệu trả về
                 if 1 <= index <= len(self.scene_prompt_boxes):
                     self.scene_prompt_boxes[index - 1].setPlainText(response_data)
