@@ -74,21 +74,21 @@ class Ui_Widget(object):
         row1 = self._lbl_save_row(self.cb_ai_model, "btn_save_model")
         lv.addLayout(row1)
 
-        # AsyncLab API Key
-        lv.addWidget(self._lbl("AsyncLab API Key", "grpLabel"))
-        self.le_api_key = self._le("Nhập AsyncLab Key...", password=True)
+        # API Key
+        lv.addWidget(self._lbl("API Key", "grpLabel"))
+        self.le_api_key = self._le("Nhập API Key...", password=True)
         row2 = self._lbl_save_row(self.le_api_key, "btn_save_api")
         lv.addLayout(row2)
 
-        # API URL GPM
-        lv.addWidget(self._lbl("API URL GPM", "grpLabel"))
+        # API URL Trình duyệt (GPM Global...)
+        lv.addWidget(self._lbl("API URL Trình duyệt (GPM Global...)", "grpLabel"))
         self.le_api_url_gpm = self._le("http://localhost:1234/api/v1/...")
         row_gpm = self._lbl_save_row(self.le_api_url_gpm, "btn_save_gpm")
         lv.addLayout(row_gpm)
 
         # Phiên bản trình duyệt
         lv.addWidget(self._lbl("Phiên bản trình duyệt", "grpLabel"))
-        self.cb_browser = self._combo(["GPM", "GoLogin", "Chrome", "Firefox", "Edge", "Brave"])
+        self.cb_browser = self._combo(["GPM Global", "Kie AI", "Geminigen", "Khác"])
         lv.addWidget(self.cb_browser)
 
         # Proxy nhập thủ công (thu gọn / mở rộng)
@@ -194,6 +194,13 @@ class Ui_Widget(object):
             lambda idx: self.lb_duration_inline.setText(f"Thời gian: {(idx + 1) * 8} giây")
         )
 
+        lv.addWidget(self._lbl("Giọng nhân vật đồng nhất", "grpLabel"))
+        self.te_voice_desc = QtWidgets.QTextEdit()
+        self.te_voice_desc.setPlaceholderText("Nhập mô tả giọng nhân vật...")
+        self.te_voice_desc.setObjectName("voiceDesc")
+        self.te_voice_desc.setMinimumHeight(_s(140, sc))
+        lv.addWidget(self.te_voice_desc)
+
         lv.addWidget(self._hline())
 
         # CẤU HÌNH THÔNG SỐ VEO3 FLOW
@@ -221,15 +228,6 @@ class Ui_Widget(object):
         lv.addWidget(self._lbl("Mô hình AI", "grpLabel"))
         self.cb_flow_ai_model = self._combo(["Veo 3.1 - Lite", "Veo 3.0", "Veo 2.0"])
         lv.addWidget(self.cb_flow_ai_model)
-
-        lv.addWidget(self._hline())
-
-        lv.addWidget(self._lbl("Giọng nhân vật đồng nhất", "grpLabel"))
-        self.te_voice_desc = QtWidgets.QTextEdit()
-        self.te_voice_desc.setPlaceholderText("Nhập mô tả giọng nhân vật...")
-        self.te_voice_desc.setObjectName("voiceDesc")
-        self.te_voice_desc.setMinimumHeight(_s(140, sc))
-        lv.addWidget(self.te_voice_desc)
 
         lv.addStretch()
 
@@ -1029,10 +1027,10 @@ class Ui_Widget(object):
 
         QScrollArea {{ background: transparent; border: none; }}
         QScrollBar:vertical {{
-            background: #0f172a; width: {_s(7,sc)}px; border-radius: {_s(3,sc)}px;
+            background: #0f172a; width: {_s(14,sc)}px; border-radius: {_s(7,sc)}px;
         }}
         QScrollBar::handle:vertical {{
-            background: #334155; border-radius: {_s(3,sc)}px; min-height: {_s(18,sc)}px;
+            background: #334155; border-radius: {_s(7,sc)}px; min-height: {_s(18,sc)}px;
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 
