@@ -675,7 +675,10 @@ class RefImageThread(QThread):
                     numbers = re.findall(r'\d+', str(self.win_size))
                     if len(numbers) >= 2:
                         w, h = int(numbers[0]), int(numbers[1])
-                        page.set_viewport_size({"width": w, "height": max(500, h - 85)})
+                        # Trừ 130px = chiều cao các thanh chrome trong GPM:
+                        # tab bar (~35px) + address bar (~45px) + GPM custom toolbar (~50px)
+                        # Điều này đảm bảo nội dung trang vừa khít trong vùng nhìn thấy
+                        page.set_viewport_size({"width": w, "height": max(500, h - 130)})
                 except:
                     pass
 
@@ -761,6 +764,8 @@ class RefImageThread(QThread):
                 self._check_stop()
 
                 # Gõ prompt
+                # Chờ settings panel đóng hoàn toàn sau Escape trước khi tìm input
+                page.wait_for_timeout(600)
                 try:
                     search_input = page.get_by_placeholder(re.compile(r"tạo gì|create", re.IGNORECASE)).first
                     search_input.wait_for(state="visible", timeout=5000)
@@ -768,6 +773,12 @@ class RefImageThread(QThread):
                     search_input = page.locator('textarea:visible, div[contenteditable="true"]:visible').last
                 
                 search_input.wait_for(state="visible", timeout=15000)
+                # Cuộn input vào giữa vùng nhìn thấy để đảm bảo hiển thị đầy đủ
+                try:
+                    search_input.scroll_into_view_if_needed(timeout=3000)
+                    page.wait_for_timeout(300)
+                except:
+                    pass
                 search_input.click(force=True)
                 search_input.fill(self.prompt_text)
                 search_input.press("Control+Enter")
@@ -817,39 +828,62 @@ class RefImageThread(QThread):
                 filename = f"ref_image_{safe_prompt}_{int(time.time())}.png"
                 image_path = os.path.join(self.save_dir, filename)
 
-                base64_data = page.evaluate('''
-                    async () => {
-                        let imgs = document.querySelectorAll('img');
-                        let url = null;
-                        let largestSize = 0;
-                        for (let i of imgs) {
-                            if (i.src && i.src.startsWith('blob:')) {
-                                let rect = i.getBoundingClientRect();
-                                let size = rect.width * rect.height;
-                                if (size > largestSize) {
-                                    largestSize = size;
-                                    url = i.src;
+                # Thử lấy ảnh qua JS (hỗ trợ cả blob: và https:// URL)
+                base64_data = None
+                try:
+                    base64_data = page.evaluate('''
+                        async () => {
+                            let imgs = document.querySelectorAll('img');
+                            let url = null;
+                            let largestSize = 0;
+                            // Tìm ảnh lớn nhất trên màn hình (ưu tiên blob: trước)
+                            for (let i of imgs) {
+                                if (i.src && i.src.startsWith('blob:')) {
+                                    let rect = i.getBoundingClientRect();
+                                    let size = rect.width * rect.height;
+                                    if (size > largestSize) {
+                                        largestSize = size;
+                                        url = i.src;
+                                    }
                                 }
                             }
-                        }
-                        if (!url) {
-                            let resNode = document.querySelector('[data-type="image-result"]');
-                            if (resNode) {
-                                let i = resNode.querySelector('img');
-                                if (i && i.src) url = i.src;
+                            // Nếu không có blob:, thử tìm ảnh https:// lớn nhất
+                            if (!url) {
+                                largestSize = 0;
+                                for (let i of imgs) {
+                                    if (i.src && (i.src.startsWith('https://') || i.src.startsWith('http://'))) {
+                                        let rect = i.getBoundingClientRect();
+                                        let size = rect.width * rect.height;
+                                        if (size > largestSize && size > 10000) {
+                                            largestSize = size;
+                                            url = i.src;
+                                        }
+                                    }
+                                }
                             }
+                            // Fallback: tìm trong node kết quả ảnh
+                            if (!url) {
+                                let resNode = document.querySelector('[data-type="image-result"], [class*="result"] img, [class*="output"] img');
+                                if (resNode) {
+                                    let imgEl = resNode.tagName === 'IMG' ? resNode : resNode.querySelector('img');
+                                    if (imgEl && imgEl.src) url = imgEl.src;
+                                }
+                            }
+                            if (!url) throw new Error("Không tìm thấy ảnh kết quả");
+                            let response = await fetch(url);
+                            if (!response.ok) throw new Error("Fetch ảnh thất bại: " + response.status);
+                            let blob = await response.blob();
+                            return new Promise((resolve, reject) => {
+                                let reader = new FileReader();
+                                reader.onloadend = () => resolve(reader.result);
+                                reader.onerror = reject;
+                                reader.readAsDataURL(blob);
+                            });
                         }
-                        if (!url) throw new Error("Không tìm thấy ảnh kết quả");
-                        let response = await fetch(url);
-                        let blob = await response.blob();
-                        return new Promise((resolve, reject) => {
-                            let reader = new FileReader();
-                            reader.onloadend = () => resolve(reader.result);
-                            reader.onerror = reject;
-                            reader.readAsDataURL(blob);
-                        });
-                    }
-                ''')
+                    ''')
+                except Exception as js_fetch_err:
+                    print(f"[Ảnh Tham Chiếu] ⚠️ JS fetch thất bại: {js_fetch_err}, thử chụp screenshot vùng ảnh...")
+                    base64_data = None
 
                 if base64_data and "," in base64_data:
                     import base64
@@ -859,7 +893,38 @@ class RefImageThread(QThread):
                     success = True
                     status_msg = image_path
                 else:
-                    raise Exception("Lỗi khi tải ảnh.")
+                    # Fallback: chụp screenshot vùng chứa ảnh nếu JS fetch không được
+                    try:
+                        box = page.evaluate("""() => {
+                            let imgs = document.querySelectorAll('img');
+                            let largestEl = null;
+                            let largestSize = 0;
+                            for (let i of imgs) {
+                                if (!i.src) continue;
+                                let rect = i.getBoundingClientRect();
+                                let size = rect.width * rect.height;
+                                if (size > largestSize && size > 10000) {
+                                    largestSize = size;
+                                    largestEl = i;
+                                }
+                            }
+                            if (largestEl) {
+                                largestEl.scrollIntoView({block: 'center', inline: 'center'});
+                                let r = largestEl.getBoundingClientRect();
+                                return {x: r.x, y: r.y, width: r.width, height: r.height};
+                            }
+                            return null;
+                        }""")
+                        page.wait_for_timeout(800)
+                        if box and box.get('width', 0) > 50 and box.get('height', 0) > 50:
+                            page.screenshot(path=image_path, clip=box)
+                            success = True
+                            status_msg = image_path
+                            print(f"[Ảnh Tham Chiếu] ✅ Chụp screenshot vùng ảnh thành công: {image_path}")
+                        else:
+                            raise Exception("Không tìm thấy vùng ảnh để chụp.")
+                    except Exception as ss_err:
+                        raise Exception(f"Lỗi khi tải ảnh: {ss_err}")
                 
                 browser.close()
                 
@@ -972,6 +1037,10 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         if hasattr(self, 'veo3_btn_create_ref'):
             self.veo3_btn_create_ref.clicked.connect(self.createReferenceImage)
             self.ref_image_signal.connect(self._on_ref_image_result)
+
+        # Kết nối nút "Mở thư mục xuất này" → mở folder chứa video/ảnh
+        if hasattr(self, 'btn_open_folder'):
+            self.btn_open_folder.clicked.connect(self._open_output_folder)
 
     def _animate_loading_button(self):
         self.dot_count = (self.dot_count + 1) % 4
@@ -1517,6 +1586,47 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             # Mở panel
             self.proxy_expand_panel.setVisible(True)
 
+    def _open_output_folder(self):
+        """Mở folder chứa tất cả video/ảnh đã tạo từ tool."""
+        # Ưu tiên lấy đường dẫn từ ô le_folder trên giao diện
+        folder_path = self.le_folder.text().strip() if hasattr(self, 'le_folder') else ""
+
+        # Fallback: nếu ô trống, dùng thư mục videos_da_tao mặc định trong cwd
+        if not folder_path:
+            folder_path = os.path.join(os.getcwd(), "videos_da_tao")
+
+        # Nếu folder chưa tồn tại thì hỏi người dùng có muốn tạo không
+        if not os.path.exists(folder_path):
+            reply = QMessageBox.question(
+                self,
+                "Thư mục chưa tồn tại",
+                f"Thư mục sau chưa tồn tại:\n{folder_path}\n\nBạn có muốn tạo thư mục này không?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                try:
+                    os.makedirs(folder_path, exist_ok=True)
+                except Exception as e:
+                    QMessageBox.critical(self, "Lỗi", f"Không thể tạo thư mục:\n{e}")
+                    return
+            else:
+                return
+
+        # Mở folder bằng trình quản lý file của hệ điều hành
+        try:
+            import subprocess
+            import sys
+            if sys.platform == "win32":
+                os.startfile(folder_path)
+            elif sys.platform == "darwin":
+                subprocess.call(["open", folder_path])
+            else:
+                subprocess.call(["xdg-open", folder_path])
+            print(f"[Thư mục xuất] ✅ Đã mở folder: {folder_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", f"Không thể mở thư mục:\n{e}")
+
     def concatAllScenes(self):
         """Ghép nối tất cả video cảnh thành 1 video duy nhất."""
         # Kiểm tra nếu đang ghép thì không cho bấm lại
@@ -1658,7 +1768,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             
             # --- CHẠY LUỒNG PLAYWRIGHT ĐỂ SINH VÀ TẢI ẢNH ---
             api_url_gpm = self.le_api_url_gpm.text().strip()
-            win_size = self.cb_win_size.currentText()
+            # Chuẩn hóa win_size sang format "W,H" (giống startThreadVeo3) trước khi truyền vào RefImageThread
+            win_size_raw = self.cb_win_size.currentText()
+            win_size = win_size_raw.replace("px", "").replace(":", ",")
             save_dir = self.le_folder.text().strip()
             
             # Lấy ID profile đầu tiên
@@ -1707,18 +1819,61 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             if hasattr(self, 'veo3_ref_img') and os.path.exists(image_path):
                 # Load ảnh lên bằng QPixmap
                 pixmap = QtGui.QPixmap(image_path)
-                # Thu phóng ảnh để vừa khít với chiều rộng của thẻ (200px), giữ tỷ lệ 16:9
-                scaled_pixmap = pixmap.scaledToWidth(
-                    200, 
-                    mode=QtCore.Qt.SmoothTransformation
-                )
-                self.veo3_ref_img.setPixmap(scaled_pixmap)
-                # Bỏ cái chữ "ẢNH THAM CHIẾU" và margin padding đi để ảnh full tràn đẹp
-                self.veo3_ref_img.setText("")
-                self.veo3_ref_img.setStyleSheet("border-radius: 8px;")
+                if not pixmap.isNull():
+                    # Lấy kích thước thực tế của widget để scale vừa khít
+                    widget_size = self.veo3_ref_img.size()
+                    target_w = max(widget_size.width(), 150)
+                    target_h = max(widget_size.height(), 100)
+                    # Scale ảnh vừa khít widget, giữ tỷ lệ, không bị méo
+                    scaled_pixmap = pixmap.scaled(
+                        target_w,
+                        target_h,
+                        QtCore.Qt.KeepAspectRatio,
+                        QtCore.Qt.SmoothTransformation
+                    )
+                    self.veo3_ref_img.setPixmap(scaled_pixmap)
+                    self.veo3_ref_img.setScaledContents(False)
+                    self.veo3_ref_img.setAlignment(QtCore.Qt.AlignCenter)
+                    # Xoá chữ "ẢNH THAM CHIẾU" và cập nhật style
+                    self.veo3_ref_img.setText("")
+                    self.veo3_ref_img.setStyleSheet(
+                        "border-radius: 8px; background-color: #0f172a;"
+                    )
+                    print(f"[Ảnh Tham Chiếu] ✅ Hiển thị ảnh thành công lên widget veo3_ref_img.")
+                else:
+                    print(f"[Ảnh Tham Chiếu] ⚠️ Không đọc được ảnh từ: {image_path}")
+                    self.veo3_ref_img.setText("⚠️ Ảnh lỗi")
+
+            # --- GỌI API WEBHOOK SAU KHI CÓ ĐỦ PROMPT VÀ ẢNH ---
+            prompt_text = getattr(self, 'full_ref_prompt', '')
+            self._send_ref_image_to_webhook(prompt_text, image_path)
+
         else:
             print(f"[Ảnh Tham Chiếu] ❌ Lỗi tạo ảnh tham chiếu: {result_msg}")
             QMessageBox.warning(self, "Lỗi tải ảnh", f"Không thể sinh hoặc tải ảnh tham chiếu.\n\nChi tiết: {result_msg}")
+
+    def _send_ref_image_to_webhook(self, prompt_text, image_path):
+        """Gửi POST (multipart) đến webhook với prompt và ảnh tham chiếu. Chạy nền để không chặn UI."""
+        WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/webhook_get_hinh_tham_chieu_tool"
+
+        def _worker(prompt, img_path):
+            try:
+                print(f"[Webhook Ảnh TC] Đang gửi POST đến {WEBHOOK_URL} ...")
+                with open(img_path, "rb") as img_file:
+                    files = {
+                        "image": (os.path.basename(img_path), img_file, "image/png")
+                    }
+                    data = {
+                        "prompt": prompt
+                    }
+                    resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=60)
+                print(f"[Webhook Ảnh TC] ✅ Gửi xong — HTTP {resp.status_code}: {resp.text[:200]}")
+            except Exception as e:
+                print(f"[Webhook Ảnh TC] ❌ Lỗi gửi webhook: {e}")
+
+        import threading
+        t = threading.Thread(target=_worker, args=(prompt_text, image_path), daemon=True)
+        t.start()
 
     def _show_full_ref_prompt(self, link):
         """Hiển thị hộp thoại chứa toàn bộ Prompt nếu người dùng bấm vào '[Xem đầy đủ]'."""
