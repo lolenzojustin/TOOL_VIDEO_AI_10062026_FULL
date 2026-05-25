@@ -1,14 +1,15 @@
 import sys
-from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtCore import QThread, pyqtSignal
-from PyQt5.QtWidgets import QMessageBox
-
 import re
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 import os
 import time
 import threading
+import base64
 import requests
+
+from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtWidgets import QMessageBox
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
 
 # Import các file phụ trợ
@@ -75,7 +76,8 @@ class MultiThread(QThread):
                         break
                     except Exception as e:
                         print(f"[Cảnh {self.index}] Lỗi kết nối CDP (lần {attempt+1}), thử lại sau 2s...")
-                        time.sleep(2)
+                        if self._stop_event.wait(2):
+                            raise InterruptedError("Đã dừng")
                 if not browser:
                     raise RuntimeError("Không thể kết nối Playwright với trình duyệt.")
                 
@@ -85,7 +87,6 @@ class MultiThread(QThread):
                 
                 # Áp dụng cứng viewport size cho Playwright để hiển thị chính xác
                 try:
-                    import re
                     # Tự động trích xuất các con số từ chuỗi đầu vào (vd: "800px:1040px", "800, 1040", "800x1040")
                     numbers = re.findall(r'\d+', str(self.win_size))
                     if len(numbers) >= 2:
@@ -285,17 +286,23 @@ class MultiThread(QThread):
                                 pass
 
                         # 1. Kiểm tra xem có bảng báo lỗi không (Không thành công / Rất tiếc)
-                        error_locator = page.locator('text="Không thành công", text="đã xảy ra lỗi", text="Rất tiếc"').first
-                        if error_locator.is_visible():
-                            print(f"[Cảnh {self.index}] Quá trình tạo kết thúc sớm (Hệ thống báo lỗi).")
-                            break
+                        try:
+                            error_locator = page.locator('text="Không thành công", text="đã xảy ra lỗi", text="Rất tiếc"').first
+                            if error_locator.is_visible():
+                                print(f"[Cảnh {self.index}] Quá trình tạo kết thúc sớm (Hệ thống báo lỗi).")
+                                break
+                        except Exception:
+                            pass
                             
                         # 2. Kiểm tra dấu hiệu đang tạo (thường có chữ 1%, 5%... hoặc progressbar)
-                        progress_locator = page.locator('text=/^\\d{1,3}%$/').first
-                        progressbar_locator = page.get_by_role("progressbar").first
-                        queue_locator = page.locator('text="Đang trong hàng đợi", text="In queue"').first
-                        
-                        is_generating = progress_locator.is_visible() or progressbar_locator.is_visible() or queue_locator.is_visible()
+                        try:
+                            progress_locator = page.locator('text=/^\\d{1,3}%$/').first
+                            progressbar_locator = page.get_by_role("progressbar").first
+                            queue_locator = page.locator('text="Đang trong hàng đợi", text="In queue"').first
+                            
+                            is_generating = progress_locator.is_visible() or progressbar_locator.is_visible() or queue_locator.is_visible()
+                        except Exception:
+                            is_generating = False
                         
                         if is_generating:
                             if not has_started_generating:
@@ -436,7 +443,6 @@ class MultiThread(QThread):
                         """)
                         
                         if base64_data and "," in base64_data:
-                            import base64
                             header, encoded = base64_data.split(",", 1)
                             with open(save_path, "wb") as f:
                                 f.write(base64.b64decode(encoded))
@@ -675,12 +681,14 @@ class RefImageThread(QThread):
 
             with sync_playwright() as p:
                 browser = None
-                for _ in range(5):
+                for attempt in range(5):
                     try:
                         browser = p.chromium.connect_over_cdp(f"http://{remote_addr}")
                         break
-                    except:
-                        time.sleep(2)
+                    except Exception:
+                        print(f"[Ảnh Tham Chiếu] Lỗi kết nối CDP (lần {attempt+1}), thử lại sau 2s...")
+                        if self._stop_event.wait(2):
+                            raise InterruptedError("Đã dừng")
                 if not browser:
                     raise RuntimeError("Không thể kết nối Playwright.")
                 
@@ -890,11 +898,19 @@ class RefImageThread(QThread):
                         try: page.locator('button').last.click(timeout=1500)
                         except: pass
 
-                    error_loc = page.locator('text="Không thành công", text="đã xảy ra lỗi", text="Rất tiếc"').first
-                    if error_loc.is_visible():
-                        raise RuntimeError("Hệ thống báo lỗi khi sinh ảnh.")
+                    try:
+                        error_loc = page.locator('text="Không thành công", text="đã xảy ra lỗi", text="Rất tiếc"').first
+                        if error_loc.is_visible():
+                            raise RuntimeError("Hệ thống báo lỗi khi sinh ảnh.")
+                    except RuntimeError:
+                        raise
+                    except Exception:
+                        pass
 
-                    is_generating = page.locator('text=/^\d{1,3}%$/').first.is_visible() or page.get_by_role("progressbar").first.is_visible() or page.locator('text="Đang trong hàng đợi", text="In queue"').first.is_visible()
+                    try:
+                        is_generating = page.locator(r'text=/^\d{1,3}%$/').first.is_visible() or page.get_by_role("progressbar").first.is_visible() or page.locator('text="Đang trong hàng đợi", text="In queue"').first.is_visible()
+                    except Exception:
+                        is_generating = False
                     
                     if is_generating:
                         has_started = True
@@ -992,7 +1008,6 @@ class RefImageThread(QThread):
                     base64_data = None
 
                 if base64_data and "," in base64_data:
-                    import base64
                     header, encoded = base64_data.split(",", 1)
                     with open(image_path, "wb") as f:
                         f.write(base64.b64decode(encoded))
@@ -1438,7 +1453,11 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             win_w, win_h = 800, 800
 
         # Lấy kích thước màn hình
-        screen_rect = QtWidgets.QApplication.desktop().screenGeometry()
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen:
+            screen_rect = screen.availableGeometry()
+        else:
+            screen_rect = QtCore.QRect(0, 0, 1920, 1080)
         screen_width = screen_rect.width()
         cols = max(1, screen_width // win_w)
 
@@ -1487,7 +1506,10 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             thread.start()
             
             # Delay 1.5 giây giữa các luồng để tránh spam API GPM và treo máy
-            time.sleep(1.5)
+            # Dùng processEvents để UI không bị đơng cứng khi chờ
+            for _ in range(15):  # 15 x 100ms = 1.5s
+                QtWidgets.QApplication.processEvents()
+                QThread.msleep(100)
 
     def update_data(self, index, status, response_data):
         # Nếu đang trong trạng thái dừng thủ công → bỏ qua tín hiệu từ thread
@@ -1595,7 +1617,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 if 1 <= index <= len(self.scene_prompt_boxes):
                     self.scene_prompt_boxes[index - 1].setPlainText(response_data)
 
-            self.completed_threads += 1
+            # Tránh race condition: chỉ tăng nếu chưa vượt total
+            if self.completed_threads < self.total_threads:
+                self.completed_threads += 1
             self.running_threads = max(0, self.running_threads - 1)  # Giảm luồng đang chạy
             self._animate_loading_button()
             

@@ -82,53 +82,99 @@ class Gpm:
             "sort": sort
         }
 
-        response = requests.get(
-            apiurl_Gpm + "/api/v1/profiles",
-            params=params_get_profiles,
-            timeout=30
-        ).json()
+        try:
+            resp = requests.get(
+                apiurl_Gpm + "/api/v1/profiles",
+                params=params_get_profiles,
+                timeout=30
+            )
+            resp.raise_for_status()
+            response = resp.json()
+        except requests.exceptions.ConnectionError:
+            print("Lỗi: Không thể kết nối đến GPM. Hãy kiểm tra GPM đã khởi động chưa.")
+            return None
+        except Exception as e:
+            print(f"Lỗi get_profiles: {e}")
+            return None
 
         print("danh sách profiles:", response)
         return response
 
 
     def get_profile(self, apiurl_Gpm, id_profile):
-        response = requests.get(
-            f"{apiurl_Gpm}/api/v1/profiles/{id_profile}",
-            timeout=30
-        ).json()
+        try:
+            resp = requests.get(
+                f"{apiurl_Gpm}/api/v1/profiles/{id_profile}",
+                timeout=30
+            )
+            resp.raise_for_status()
+            response = resp.json()
+        except requests.exceptions.ConnectionError:
+            print(f"Lỗi: Không thể kết nối đến GPM khi lấy profile {id_profile}.")
+            return None
+        except Exception as e:
+            print(f"Lỗi get_profile: {e}")
+            return None
 
         print("thông tin profile:", response)
         return response
-    def create_profile(self,apiurl_Gpm,proxy, win_size="1280,800"):
+    def create_profile(self, apiurl_Gpm, proxy, win_size="1280,800"):
         new_payload = self.get_new_payload(proxy, win_size)
         headers = {
-        "Content-Type": "application/json"
-    }
-        response = requests.post(
-            apiurl_Gpm + "/api/v1/profiles/create",
-            json=new_payload,
-            headers=headers,
-            timeout=30
-        ).json()
-        id_profile = response["data"]["id"]
-        print("tạo id_profile là",id_profile)
+            "Content-Type": "application/json"
+        }
+        try:
+            resp = requests.post(
+                apiurl_Gpm + "/api/v1/profiles/create",
+                json=new_payload,
+                headers=headers,
+                timeout=30
+            )
+            resp.raise_for_status()
+            response = resp.json()
+        except requests.exceptions.ConnectionError:
+            print("Lỗi: Không thể kết nối đến GPM khi tạo profile.")
+            return None
+        except Exception as e:
+            print(f"Lỗi create_profile: {e}")
+            return None
+
+        data = response.get("data") or {}
+        id_profile = data.get("id")
+        if not id_profile:
+            print(f"Lỗi: GPM không trả về ID profile. Response: {response}")
+            return None
+        print("tạo id_profile là", id_profile)
         return id_profile
     
-    def create_profile_2(self,apiurl_Gpm, win_size="1280,800"):
+    def create_profile_2(self, apiurl_Gpm, win_size="1280,800"):
         new_payload = self.get_new_payload_2(win_size)
         headers = {
-        "Content-Type": "application/json"
-    }
-        response = requests.post(
-            apiurl_Gpm + "/api/v1/profiles/create",
-            json=new_payload,
-            headers=headers,
-            timeout=30
-        ).json()
-        id_profile = response["data"]["id"]
-        print("tạo id_profile là",id_profile)
-        return id_profile  
+            "Content-Type": "application/json"
+        }
+        try:
+            resp = requests.post(
+                apiurl_Gpm + "/api/v1/profiles/create",
+                json=new_payload,
+                headers=headers,
+                timeout=30
+            )
+            resp.raise_for_status()
+            response = resp.json()
+        except requests.exceptions.ConnectionError:
+            print("Lỗi: Không thể kết nối đến GPM khi tạo profile.")
+            return None
+        except Exception as e:
+            print(f"Lỗi create_profile_2: {e}")
+            return None
+
+        data = response.get("data") or {}
+        id_profile = data.get("id")
+        if not id_profile:
+            print(f"Lỗi: GPM không trả về ID profile. Response: {response}")
+            return None
+        print("tạo id_profile là", id_profile)
+        return id_profile
     # def open_profile(self,apiurl_Gpm, id_profile, win_pos, win_size):
     #     extension_dir = r"C:\Users\PC\Desktop\nopecha"
     #     add_args = f'--load-extension="{extension_dir}"'
@@ -175,24 +221,37 @@ class Gpm:
 
         url = f"{apiurl_Gpm}/api/v1/profiles/start/{id_profile}"
 
-        response = requests.get(
-            url,
-            params=params_open_profile,
-            timeout=30
-        ).json()
+        try:
+            resp = requests.get(
+                url,
+                params=params_open_profile,
+                timeout=30
+            )
+            resp.raise_for_status()
+            response = resp.json()
+        except requests.exceptions.ConnectionError:
+            print(f"Lỗi: Không thể kết nối đến GPM ({apiurl_Gpm}). Hãy kiểm tra GPM đã khởi động chưa.")
+            return None
+        except requests.exceptions.Timeout:
+            print(f"Lỗi: GPM không phản hồi trong 30s khi mở profile {id_profile}.")
+            return None
+        except Exception as e:
+            print(f"Lỗi open_profile: {e}")
+            return None
 
         print("win_pos:", win_pos)
         print("win_size:", win_size)
         print("response open_profile:", response)
 
         if not isinstance(response, dict):
-            raise Exception(f"Lỗi khởi động Profile GPM: {response}")
+            print(f"Lỗi: GPM trả về dữ liệu không hợp lệ: {response}")
+            return None
 
-        data = response.get("data", {})
+        data = response.get("data") or {}
         remote_debugging_port = data.get("remote_debugging_port")
 
         if not remote_debugging_port:
-            print("Không có remote_debugging_port trong data")
+            print(f"Không có remote_debugging_port trong data. Response: {response}")
             return None
 
         remote_debugging_address = f"127.0.0.1:{remote_debugging_port}"
@@ -203,10 +262,19 @@ class Gpm:
 
 
     def close_profile(self, apiurl_Gpm, id_profile):
-        response = requests.get(
-            f"{apiurl_Gpm}/api/v1/profiles/stop/{id_profile}",
-            timeout=30
-        ).json()
+        try:
+            resp = requests.get(
+                f"{apiurl_Gpm}/api/v1/profiles/stop/{id_profile}",
+                timeout=30
+            )
+            resp.raise_for_status()
+            response = resp.json()
+        except requests.exceptions.ConnectionError:
+            print(f"Lỗi: Không thể kết nối GPM khi đóng profile {id_profile}.")
+            return {"success": False, "message": "Connection Error"}
+        except Exception as e:
+            print(f"Lỗi close_profile: {e}")
+            return {"success": False, "message": str(e)}
         print("đóng profile:", response)
         return response
     def update_profile(self, apiurl_Gpm, id_profile, proxy=""):
@@ -216,21 +284,40 @@ class Gpm:
             "Content-Type": "application/json"
         }
 
-        response = requests.post(
-            f"{apiurl_Gpm}/api/v1/profiles/update/{id_profile}",
-            json=payload,
-            headers=headers,
-            timeout=30
-        ).json()
+        try:
+            resp = requests.post(
+                f"{apiurl_Gpm}/api/v1/profiles/update/{id_profile}",
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            resp.raise_for_status()
+            response = resp.json()
+        except requests.exceptions.ConnectionError:
+            print(f"Lỗi: Không thể kết nối GPM khi update profile {id_profile}.")
+            return None
+        except Exception as e:
+            print(f"Lỗi update_profile: {e}")
+            return None
 
         print("update profile:", response)
         return response
+
     def delete_profile(self, apiurl_Gpm, id_profile, mode="hard"):
-        response = requests.get(
-            f"{apiurl_Gpm}/api/v1/profiles/delete/{id_profile}",
-            params={"mode": mode},
-            timeout=30
-        ).json()
+        try:
+            resp = requests.get(
+                f"{apiurl_Gpm}/api/v1/profiles/delete/{id_profile}",
+                params={"mode": mode},
+                timeout=30
+            )
+            resp.raise_for_status()
+            response = resp.json()
+        except requests.exceptions.ConnectionError:
+            print(f"Lỗi: Không thể kết nối GPM khi xóa profile {id_profile}.")
+            return None
+        except Exception as e:
+            print(f"Lỗi delete_profile: {e}")
+            return None
 
         print("xóa id_profile là", id_profile)
         print("response delete:", response)
