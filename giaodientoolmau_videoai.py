@@ -20,7 +20,7 @@ class MultiThread(QThread):
     # Khai báo signal trả về: (Số thứ tự cảnh, trạng thái, kết quả)
     record = pyqtSignal(int, str, str)
 
-    def __init__(self, index, api_url_gpm, profile_id="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0", flow_settings=None):
+    def __init__(self, index, api_url_gpm, profile_id="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0", flow_settings=None, save_dir=""):
         super().__init__()
         self.index = index
         self.api_url_gpm = api_url_gpm  # URL GPM lấy từ giao diện
@@ -28,6 +28,7 @@ class MultiThread(QThread):
         self.prompt_text = prompt_text
         self.win_size = win_size
         self.win_pos = win_pos
+        self.save_dir = save_dir
         self.flow_settings = flow_settings or {
             "content_type": "Video",
             "frame_type": "Khung hình",
@@ -277,6 +278,16 @@ class MultiThread(QThread):
                     while elapsed < timeout:
                         self._check_stop()
                         
+                        # 1. Kiểm tra xem có bảng báo lỗi không (Không thành công / Rất tiếc)
+                        try:
+                            error_locator = page.locator('text="Không thành công", text="đã xảy ra lỗi", text="Rất tiếc"').first
+                            if error_locator.is_visible():
+                                print(f"[Cảnh {self.index}] Quá trình tạo kết thúc sớm (Hệ thống báo lỗi).")
+                                raise RuntimeError("Hệ thống báo lỗi (Không thành công).")
+                        except Exception as e:
+                            if isinstance(e, RuntimeError): raise
+                            pass
+
                         if elapsed == 4 and not has_started_generating:
                             print(f"[Cảnh {self.index}] Vẫn chưa thấy bắt đầu tạo, thử click trực tiếp nút Gửi dự phòng...")
                             try:
@@ -284,15 +295,6 @@ class MultiThread(QThread):
                                 page.locator('button').last.click(timeout=1500)
                             except:
                                 pass
-
-                        # 1. Kiểm tra xem có bảng báo lỗi không (Không thành công / Rất tiếc)
-                        try:
-                            error_locator = page.locator('text="Không thành công", text="đã xảy ra lỗi", text="Rất tiếc"').first
-                            if error_locator.is_visible():
-                                print(f"[Cảnh {self.index}] Quá trình tạo kết thúc sớm (Hệ thống báo lỗi).")
-                                break
-                        except Exception:
-                            pass
                             
                         # 2. Kiểm tra dấu hiệu đang tạo (thường có chữ 1%, 5%... hoặc progressbar)
                         try:
@@ -329,6 +331,7 @@ class MultiThread(QThread):
                         
                 except Exception as e:
                     if isinstance(e, InterruptedError): raise
+                    if isinstance(e, RuntimeError) and "Không thành công" in str(e): raise
                     print(f"[Cảnh {self.index}] Lỗi trong vòng lặp chờ kết quả: {e}")
                 
                 # Bước 6: Sau khi video tạo xong thì tải video về máy
@@ -336,11 +339,15 @@ class MultiThread(QThread):
                     print(f"[Cảnh {self.index}] Đang tiến hành tải video về máy...")
                     
                     # Chuẩn bị tên file và thư mục
-                    save_dir = os.path.join(os.getcwd(), "videos_da_tao")
+                    save_dir = self.save_dir if self.save_dir else os.path.join(os.getcwd(), "videos_da_tao")
                     if not os.path.exists(save_dir):
-                        os.makedirs(save_dir)
+                        try:
+                            os.makedirs(save_dir, exist_ok=True)
+                        except Exception:
+                            pass
                         
-                    safe_prompt = re.sub(r'[\\/*?:"<>|]', "", self.prompt_text)
+                    # Lọc sạch ký tự không hợp lệ và cả dấu xuống dòng (gây lỗi Errno 22)
+                    safe_prompt = re.sub(r'[\\/*?:"<>|\n\r]', " ", self.prompt_text)
                     safe_prompt = safe_prompt[:30].strip() if safe_prompt else "video"
                     filename = f"canh_{self.index}_{safe_prompt}.mp4"
                     save_path = os.path.join(save_dir, filename)
@@ -357,8 +364,19 @@ class MultiThread(QThread):
                         # Dùng Javascript để tìm tọa độ chính xác của vùng chứa video trên màn hình
                         # (Cách này tránh lỗi is_visible() khắt khe của Playwright khiến nó chụp cả màn hình)
                         box = page.evaluate("""() => {
-                            let videos = document.querySelectorAll('video');
-                            for (let v of videos) {
+                            function findVideos(root) {
+                                let vids = Array.from(root.querySelectorAll('video'));
+                                let els = root.querySelectorAll('*');
+                                for (let e of els) {
+                                    if (e.shadowRoot) {
+                                        vids = vids.concat(findVideos(e.shadowRoot));
+                                    }
+                                }
+                                return vids;
+                            }
+                            let videos = findVideos(document);
+                            for (let i = videos.length - 1; i >= 0; i--) {
+                                let v = videos[i];
                                 // Nếu thẻ video bị ẩn (width/height = 0), tìm dần lên thẻ cha chứa nó
                                 let el = v;
                                 while (el && el !== document.body) {
@@ -371,7 +389,7 @@ class MultiThread(QThread):
                                         let finalRect = el.getBoundingClientRect();
                                         return {x: finalRect.x, y: finalRect.y, width: finalRect.width, height: finalRect.height};
                                     }
-                                    el = el.parentElement;
+                                    el = el.parentElement || (el.getRootNode() && el.getRootNode().host);
                                 }
                             }
                             return null;
@@ -396,64 +414,101 @@ class MultiThread(QThread):
                     except Exception as thumb_err:
                         print(f"[Cảnh {self.index}] ⚠️ Lỗi chụp ảnh thumbnail: {thumb_err}")
 
-                    # --- TẢI VIDEO VỀ MÁY BẰNG JAVASCRIPT FETCH ---
+                    # --- TẢI VIDEO VỀ MÁY BẰNG JAVASCRIPT / PLAYWRIGHT ---
                     try:
-                        print(f"[Cảnh {self.index}] Đang trích xuất dữ liệu video trực tiếp qua Javascript...")
-                        # Dùng JS lấy src của video và fetch blob -> base64
-                        # (Cách này vượt qua việc phải nhấp nút Tải xuống trên UI dễ bị lỗi)
-                        base64_data = page.evaluate("""
-                            async () => {
-                                // Lấy tất cả thẻ video
-                                let videos = document.querySelectorAll('video');
-                                let url = null;
-                                for (let v of videos) {
-                                    let tempUrl = v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
-                                    if (tempUrl) {
-                                        url = tempUrl;
-                                        // Ưu tiên blob url
-                                        if (url.startsWith('blob:')) break;
-                                    }
-                                }
-                                
-                                if (!url) {
-                                    // Thử tìm trong shadow dom hoặc thẻ chứa đặc biệt
-                                    let resultNode = document.querySelector('[data-type="video-result"]');
-                                    if (resultNode) {
-                                        let v = resultNode.querySelector('video');
-                                        if (v) {
-                                            url = v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
-                                        }
-                                    }
-                                }
-                                
-                                if (!url) throw new Error("Không tìm thấy URL video nào hợp lệ trên trang");
-                                
-                                // Fetch dữ liệu từ url (hoạt động tốt với blob:https://...)
-                                let response = await fetch(url);
-                                let blob = await response.blob();
-                                
-                                // Đọc blob thành base64 để truyền về Python
-                                return new Promise((resolve, reject) => {
-                                    let reader = new FileReader();
-                                    reader.onloadend = () => resolve(reader.result);
-                                    reader.onerror = reject;
-                                    reader.readAsDataURL(blob);
-                                });
-                            }
-                        """)
+                        print(f"[Cảnh {self.index}] Đang trích xuất dữ liệu video trực tiếp...")
                         
-                        if base64_data and "," in base64_data:
-                            header, encoded = base64_data.split(",", 1)
-                            with open(save_path, "wb") as f:
-                                f.write(base64.b64decode(encoded))
-                            print(f"[Cảnh {self.index}] ✅ Đã tải video thành công (qua JS fetch): {save_path}")
-                            
-                            emit_data = f"{save_path}|{thumbnail_path}" if thumbnail_path else save_path
-                            self.record.emit(self.index, "Tải video thành công", emit_data)
+                        video_url = None
+                        target_frame = None
+
+                        # CÁCH 1: Dùng Playwright Locator quét qua tất cả frame và xuyên thủng shadow DOM
+                        for frame in page.frames:
+                            try:
+                                vids = frame.locator('video').all()
+                                if vids:
+                                    for vid in reversed(vids):
+                                        url = vid.evaluate("el => el.src || (el.querySelector('source') ? el.querySelector('source').src : '')")
+                                        if url:
+                                            video_url = url
+                                            target_frame = frame
+                                            break
+                            except Exception:
+                                pass
+                            if video_url: break
+
+                        # CÁCH 2: Dùng JS đệ quy xuyên Shadow DOM trên từng frame (Dự phòng)
+                        if not video_url:
+                            for frame in page.frames:
+                                try:
+                                    url = frame.evaluate("""
+                                        () => {
+                                            function findVideos(root) {
+                                                let vids = Array.from(root.querySelectorAll('video'));
+                                                let els = root.querySelectorAll('*');
+                                                for (let e of els) {
+                                                    if (e.shadowRoot) vids = vids.concat(findVideos(e.shadowRoot));
+                                                }
+                                                return vids;
+                                            }
+                                            let videos = findVideos(document);
+                                            for (let i = videos.length - 1; i >= 0; i--) {
+                                                let v = videos[i];
+                                                let tempUrl = v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
+                                                if (tempUrl) return tempUrl;
+                                            }
+                                            return null;
+                                        }
+                                    """)
+                                    if url:
+                                        video_url = url
+                                        target_frame = frame
+                                        break
+                                except Exception:
+                                    pass
+
+                        if not video_url:
+                            raise Exception("Không tìm thấy thẻ video hoặc URL video nào hợp lệ trên toàn bộ trang (kể cả trong iframe).")
+                        
+                        print(f"[Cảnh {self.index}] Đã lấy được URL video: {video_url[:80]}...")
+
+                        if video_url.startswith('blob:'):
+                            if not target_frame: target_frame = page
+                            # Dùng JS fetch cho blob URL bên trong đúng frame chứa nó
+                            base64_data = target_frame.evaluate(f"""
+                                async () => {{
+                                    let response = await fetch("{video_url}");
+                                    let blob = await response.blob();
+                                    return new Promise((resolve, reject) => {{
+                                        let reader = new FileReader();
+                                        reader.onloadend = () => resolve(reader.result);
+                                        reader.onerror = reject;
+                                        reader.readAsDataURL(blob);
+                                    }});
+                                }}
+                            """)
+                            if base64_data and "," in base64_data:
+                                import base64
+                                header, encoded = base64_data.split(",", 1)
+                                with open(save_path, "wb") as f:
+                                    f.write(base64.b64decode(encoded))
+                            else:
+                                raise Exception("Dữ liệu base64 trả về không hợp lệ")
                         else:
-                            raise Exception("Dữ liệu base64 trả về không hợp lệ")
+                            # Dùng Playwright Context Request API để tải http/https (bỏ qua CORS, kèm cookie)
+                            resp = context.request.get(video_url)
+                            if resp.ok:
+                                with open(save_path, "wb") as f:
+                                    f.write(resp.body())
+                            else:
+                                raise Exception(f"Lỗi tải video HTTP {resp.status} - {resp.status_text}")
+                            
+                        print(f"[Cảnh {self.index}] ✅ Đã tải video thành công: {save_path}")
+                        
+                        emit_data = f"{save_path}|{thumbnail_path}" if thumbnail_path else save_path
+                        self.record.emit(self.index, "Tải video thành công", emit_data)
                     except Exception as js_err:
-                        print(f"[Cảnh {self.index}] ❌ Lỗi khi tải video bằng JS: {js_err}")
+                        print(f"[Cảnh {self.index}] ❌ Lỗi khi tải video: {js_err}")
+                        raise RuntimeError(f"Lỗi tải video: {js_err}")
 
                 except Exception as e:
                     print(f"[Cảnh {self.index}] ❌ Lỗi tải video chung: {e}")
@@ -466,15 +521,26 @@ class MultiThread(QThread):
                     try:
                         # Thử chụp lại ảnh thumbnail mới nhất (do đôi khi video load chậm)
                         box = page.evaluate("""() => {
-                            let videos = document.querySelectorAll('video');
-                            for (let v of videos) {
+                            function findVideos(root) {
+                                let vids = Array.from(root.querySelectorAll('video'));
+                                let els = root.querySelectorAll('*');
+                                for (let e of els) {
+                                    if (e.shadowRoot) {
+                                        vids = vids.concat(findVideos(e.shadowRoot));
+                                    }
+                                }
+                                return vids;
+                            }
+                            let videos = findVideos(document);
+                            for (let i = videos.length - 1; i >= 0; i--) {
+                                let v = videos[i];
                                 let el = v;
                                 while (el && el !== document.body) {
                                     let rect = el.getBoundingClientRect();
                                     if (rect.width > 100 && rect.height > 100) {
                                         return {x: rect.x, y: rect.y, width: rect.width, height: rect.height};
                                     }
-                                    el = el.parentElement;
+                                    el = el.parentElement || (el.getRootNode() && el.getRootNode().host);
                                 }
                             }
                             return null;
@@ -1490,6 +1556,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 "ai_model": self.cb_flow_ai_model.currentText(),
             }
 
+            save_dir = self.le_folder.text().strip() if hasattr(self, 'le_folder') else ""
+
             thread = MultiThread(
                 index=i,
                 api_url_gpm=input_api_url_gpm,
@@ -1497,7 +1565,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 prompt_text=current_prompt,
                 win_size=input_win_size,
                 win_pos=win_pos,
-                flow_settings=flow_settings
+                flow_settings=flow_settings,
+                save_dir=save_dir
             )
 
             # Lắng nghe dữ liệu bắn về từ Thread để update log
@@ -1520,6 +1589,22 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         # In log ra màn hình console để theo dõi
         print(f"[Cảnh {index}] Trạng thái: {status} | Phản hồi N8N: {response_data}")
         
+        if status.startswith("Lỗi"):
+            all_preview_containers = []
+            for tab in [self.tab_veo3, self.tab_kol]:
+                all_preview_containers.extend(tab.findChildren(QtWidgets.QStackedWidget, "previewContainer"))
+            for container in all_preview_containers:
+                preview_widget = container.widget(0)
+                if not preview_widget or not isinstance(preview_widget, QtWidgets.QLabel): continue
+                label_text = preview_widget.text().strip()
+                if hasattr(preview_widget, '_scene_index'):
+                    is_match = (preview_widget._scene_index == index)
+                else:
+                    is_match = (f"SCENE {index}" in label_text.upper())
+                if is_match:
+                    preview_widget.setText(f"❌ {status}")
+                    preview_widget.setStyleSheet("background: rgba(239, 68, 68, 0.2); color: #ef4444; font-weight: bold; border-radius: 6px;")
+
         if status == "Tải video thành công":
             save_path = response_data
             thumbnail_path = ""
@@ -1549,7 +1634,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 if hasattr(preview_widget, '_scene_index'):
                     is_match = (preview_widget._scene_index == index)
                 else:
-                    is_match = (label_text == f"SCENE {index}")
+                    is_match = (f"SCENE {index}" in label_text.upper())
                 
                 if not is_match:
                     continue
@@ -1779,9 +1864,12 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             return
 
         # Tìm thư mục chứa video đã tạo
-        save_dir = os.path.join(os.getcwd(), "videos_da_tao")
+        save_dir = self.le_folder.text().strip() if hasattr(self, 'le_folder') else ""
+        if not save_dir:
+            save_dir = os.path.join(os.getcwd(), "videos_da_tao")
+            
         if not os.path.exists(save_dir):
-            QMessageBox.warning(self, "Lỗi", "Chưa có thư mục videos_da_tao.\nHãy tạo video từ các cảnh trước!")
+            QMessageBox.warning(self, "Lỗi", "Thư mục lưu trữ video không tồn tại.\nHãy tạo video từ các cảnh trước!")
             return
 
         # Lấy số lượng cảnh hiện tại đang được chọn trên giao diện
