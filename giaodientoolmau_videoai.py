@@ -6,6 +6,24 @@ import threading
 import base64
 import requests
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+if "--self-test-moviepy" in sys.argv:
+    try:
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+        from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
+        import imageio_ffmpeg
+
+        imageio_ffmpeg.get_ffmpeg_exe()
+        sys.exit(0)
+    except Exception as exc:
+        print(f"moviepy self-test failed: {exc}")
+        sys.exit(70)
+
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
@@ -20,7 +38,7 @@ class MultiThread(QThread):
     # Khai báo signal trả về: (Số thứ tự cảnh, trạng thái, kết quả)
     record = pyqtSignal(int, str, str)
 
-    def __init__(self, index, api_url_gpm, profile_id="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0", flow_settings=None, save_dir=""):
+    def __init__(self, index, api_url_gpm, profile_id="", prompt_text="test cảnh", win_size="800,800", win_pos="0,0", flow_settings=None, save_dir="", reference_image_path=""):
         super().__init__()
         self.index = index
         self.api_url_gpm = api_url_gpm  # URL GPM lấy từ giao diện
@@ -29,6 +47,7 @@ class MultiThread(QThread):
         self.win_size = win_size
         self.win_pos = win_pos
         self.save_dir = save_dir
+        self.reference_image_path = reference_image_path
         self.flow_settings = flow_settings or {
             "content_type": "Video",
             "frame_type": "Khung hình",
@@ -38,6 +57,146 @@ class MultiThread(QThread):
         }
         self.is_running = True
         self._stop_event = threading.Event()  # Event để dừng sleep ngay lập tức
+
+    def _upload_reference_image_to_flow(self, page, image_path):
+        raw_image_path = str(image_path or "").strip()
+        if not raw_image_path:
+            raise RuntimeError("Chưa có hình tham chiếu hợp lệ để upload.")
+        image_path = os.path.abspath(raw_image_path)
+        if not os.path.exists(image_path):
+            raise RuntimeError("Chưa có hình tham chiếu hợp lệ để upload.")
+
+        self.record.emit(self.index, "Đang upload ảnh tham chiếu", os.path.basename(image_path))
+        last_error = None
+
+        def accept_upload_terms_if_visible():
+            accept_selectors = [
+                'button:has-text("Tôi đồng ý")',
+                '[role="button"]:has-text("Tôi đồng ý")',
+                'button:has-text("I agree")',
+                '[role="button"]:has-text("I agree")',
+                'button:has-text("Agree")',
+                '[role="button"]:has-text("Agree")',
+            ]
+            for _ in range(8):
+                self._check_stop()
+                for accept_selector in accept_selectors:
+                    try:
+                        accept_btn = page.locator(accept_selector).last
+                        if accept_btn.is_visible(timeout=500):
+                            accept_btn.click(force=True, timeout=3000)
+                            page.wait_for_timeout(1200)
+                            print(f"[Cảnh {self.index}] Đã bấm xác nhận upload ảnh: {accept_selector}")
+                            return True
+                    except Exception:
+                        pass
+                page.wait_for_timeout(500)
+            return False
+
+        def wait_reference_image_ready():
+            self.record.emit(self.index, "Đang chờ ảnh tham chiếu load xong", "-")
+            stable_without_progress = 0
+            saw_upload_progress = False
+
+            for _ in range(90):
+                self._check_stop()
+                try:
+                    progress_visible = page.locator(r'text=/^\d{1,3}%$/').first.is_visible(timeout=500)
+                except Exception:
+                    progress_visible = False
+
+                try:
+                    progressbar_visible = page.get_by_role("progressbar").first.is_visible(timeout=500)
+                except Exception:
+                    progressbar_visible = False
+
+                try:
+                    upload_text_visible = page.locator(
+                        'text="Đang tải", text="Uploading", text="Processing", text="Đang xử lý"'
+                    ).first.is_visible(timeout=500)
+                except Exception:
+                    upload_text_visible = False
+
+                is_loading = progress_visible or progressbar_visible or upload_text_visible
+                if is_loading:
+                    saw_upload_progress = True
+                    stable_without_progress = 0
+                else:
+                    stable_without_progress += 1
+                    if stable_without_progress >= (3 if saw_upload_progress else 6):
+                        page.wait_for_timeout(1000)
+                        print(f"[Cảnh {self.index}] Ảnh tham chiếu đã load xong, tiếp tục nhập prompt.")
+                        return True
+
+                page.wait_for_timeout(1000)
+
+            raise RuntimeError("Timeout: Ảnh tham chiếu chưa load xong sau 90 giây.")
+
+        def try_file_inputs():
+            nonlocal last_error
+            try:
+                file_inputs = page.locator('input[type="file"]')
+                count = file_inputs.count()
+            except Exception as e:
+                last_error = e
+                return False
+
+            for input_index in range(count - 1, -1, -1):
+                self._check_stop()
+                try:
+                    file_inputs.nth(input_index).set_input_files(image_path, timeout=5000)
+                    page.wait_for_timeout(1500)
+                    accept_upload_terms_if_visible()
+                    wait_reference_image_ready()
+                    print(f"[Cảnh {self.index}] Đã upload ảnh tham chiếu bằng input file: {image_path}")
+                    return True
+                except Exception as e:
+                    last_error = e
+            return False
+
+        if try_file_inputs():
+            return
+
+        upload_triggers = [
+            'button:has-text("Tác nhân")',
+            '[role="button"]:has-text("Tác nhân")',
+            'button:has-text("Thành phần")',
+            '[role="button"]:has-text("Thành phần")',
+            'button:has-text("Hình ảnh")',
+            '[role="button"]:has-text("Hình ảnh")',
+            'button:has-text("Ảnh")',
+            '[role="button"]:has-text("Ảnh")',
+            'button:has-text("Tải lên")',
+            '[role="button"]:has-text("Tải lên")',
+            'button:has-text("Image")',
+            'button:has-text("Upload")',
+            'button:has-text("Character")',
+            'button[aria-label*="image" i]',
+            'button[aria-label*="upload" i]',
+            'button[aria-label*="attach" i]',
+        ]
+
+        for selector in upload_triggers:
+            self._check_stop()
+            try:
+                trigger = page.locator(selector).last
+                if not trigger.is_visible(timeout=1500):
+                    continue
+                with page.expect_file_chooser(timeout=5000) as chooser_info:
+                    trigger.click(force=True, timeout=3000)
+                chooser_info.value.set_files(image_path)
+                page.wait_for_timeout(1500)
+                accept_upload_terms_if_visible()
+                wait_reference_image_ready()
+                print(f"[Cảnh {self.index}] Đã upload ảnh tham chiếu qua nút: {selector}")
+                return
+            except Exception as e:
+                last_error = e
+
+        if try_file_inputs():
+            return
+
+        raise RuntimeError(f"Không thể upload ảnh tham chiếu vào Flow. Chi tiết: {last_error}")
 
     def run(self):
         gpm = Gpm()
@@ -256,6 +415,20 @@ class MultiThread(QThread):
                 
                 search_input.wait_for(state="visible", timeout=15000)
                 search_input.click(force=True)  # force=True để tránh bị chặn bởi các element khác
+
+                if not self.reference_image_path:
+                    raise RuntimeError("Chưa có hình tham chiếu. Vui lòng tạo ảnh tham chiếu trước khi tạo video từng cảnh.")
+
+                self._upload_reference_image_to_flow(page, self.reference_image_path)
+
+                try:
+                    search_input = page.get_by_placeholder(re.compile(r"tạo gì|create", re.IGNORECASE)).first
+                    search_input.wait_for(state="visible", timeout=5000)
+                except:
+                    search_input = page.locator('textarea:visible, div[contenteditable="true"]:visible').last
+
+                search_input.wait_for(state="visible", timeout=15000)
+                search_input.click(force=True)
                 
                 # Điền prompt siêu tốc (thay vì type từng chữ)
                 search_input.fill(self.prompt_text)
@@ -667,11 +840,13 @@ class ConcatVideoThread(QThread):
         self.output_path = output_path
 
     def run(self):
+        clips = []
+        final_clip = None
         try:
-            from moviepy import VideoFileClip, concatenate_videoclips
+            from moviepy.video.io.VideoFileClip import VideoFileClip
+            from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
 
             print(f"[Ghép video] Đang load {len(self.video_files)} video cảnh...")
-            clips = []
             for vf in self.video_files:
                 print(f"  - Đang load: {os.path.basename(vf)}")
                 clip = VideoFileClip(vf)
@@ -692,22 +867,28 @@ class ConcatVideoThread(QThread):
                 logger=None  # Tắt log moviepy để không spam console
             )
 
-            # Giải phóng bộ nhớ
-            final_clip.close()
-            for c in clips:
-                c.close()
-
             if os.path.exists(self.output_path):
                 print(f"[Ghép video] ✅ Thành công: {self.output_path}")
                 self.finished.emit(True, self.output_path)
             else:
                 self.finished.emit(False, "File xuất ra không tồn tại sau khi ghép.")
-        except ImportError:
-            self.finished.emit(False, "Chưa cài thư viện moviepy.\n\nChạy lệnh: pip install moviepy")
+        except ImportError as e:
+            self.finished.emit(False, f"Thiếu thư viện ghép video trong bản build.\n\nChi tiết: {e}")
         except Exception as e:
             import traceback
             print(f"[Ghép video] ❌ Lỗi: {traceback.format_exc()}")
             self.finished.emit(False, f"Lỗi ghép video: {e}")
+        finally:
+            if final_clip is not None:
+                try:
+                    final_clip.close()
+                except Exception:
+                    pass
+            for clip in clips:
+                try:
+                    clip.close()
+                except Exception:
+                    pass
 
 
 
@@ -739,9 +920,20 @@ class RefImageThread(QThread):
             if not profile_id:
                 raise RuntimeError("Chưa có ID Profile.")
 
-            remote_addr = gpm.open_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id, win_pos=self.win_pos, win_size=self.win_size)
+            remote_addr = None
+            for open_attempt in range(2):
+                remote_addr = gpm.open_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id, win_pos=self.win_pos, win_size=self.win_size)
+                if remote_addr:
+                    break
+                print(f"[Ảnh Tham Chiếu] Không mở được Profile GPM lần {open_attempt + 1}, thử đóng profile rồi mở lại...")
+                try:
+                    gpm.close_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id)
+                except Exception:
+                    pass
+                if self._stop_event.wait(2):
+                    raise InterruptedError("Đã dừng")
             if not remote_addr:
-                raise RuntimeError("Không thể mở Profile GPM.")
+                raise RuntimeError("Không thể mở Profile GPM. Hãy kiểm tra GPM Global đang mở, API URL đúng và ID Profile tồn tại.")
 
             if not self.is_running: return
 
@@ -1195,6 +1387,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self._load_config()
         self.scene_prompt_boxes = self.tab_veo3.findChildren(QtWidgets.QTextEdit, "promptBox")
         self.scene_preview_containers = self.tab_veo3.findChildren(QtWidgets.QStackedWidget, "previewContainer")
+        self._active_run_prompt_boxes = self.scene_prompt_boxes
         self._connect_config_signals()
 
         self.threads = []
@@ -1202,6 +1395,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.total_threads = 0
         self.running_threads = 0    # Số luồng đang chạy thực tế
         self._is_stopping = False   # Flag để bỏ qua signal của thread khi đã bấm dừng
+        self.reference_image_path = ""
 
         # Kết nối nút proxy: mở rộng / thu gọn bảng nhập proxy
         self.btn_proxy_collapsed.clicked.connect(self._toggle_proxy_panel)
@@ -1219,6 +1413,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
         # Kết nối sự kiện Click cho nút "BẮT ĐẦU TẠO VIDEO" bên tab Veo3
         self.veo3_btn_analyze.clicked.connect(self.startThreadVeo3)
+        if hasattr(self, "kol_btn_analyze"):
+            self.kol_btn_analyze.clicked.connect(self.startThreadVeo3)
         
         # Kết nối sự kiện Click cho nút "Bắt đầu phân tích tạo Prompt" cho cả 2 tab
         self.veo3_btn_merge.clicked.connect(self.analyzePrompts)
@@ -1305,17 +1501,26 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
     def _set_veo3_btn_running(self, is_running):
         """Đổi trạng thái nút BẮT ĐẦU TẠO VIDEO theo trạng thái luồng."""
         if is_running:
-            self.veo3_btn_analyze.setText("⏹  ĐANG CHẠY TẠO VIDEO...BẤM ĐỂ DỪNG CHẠY")
-            self.veo3_btn_analyze.setStyleSheet(
+            text = "⏹  ĐANG CHẠY TẠO VIDEO...BẤM ĐỂ DỪNG CHẠY"
+            style = (
                 "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,"
                 " stop:0 #b91c1c, stop:1 #ef4444);"
                 " border: none; color: white; font-weight: bold;"
             )
+            self.veo3_btn_analyze.setText(text)
+            self.veo3_btn_analyze.setStyleSheet(style)
+            if hasattr(self, "kol_btn_analyze"):
+                self.kol_btn_analyze.setText(text)
+                self.kol_btn_analyze.setStyleSheet(style)
             self._start_btn_running_animation()
         else:
-            self.veo3_btn_analyze.setText("🚀  Bắt đầu tạo video từ tất cả cảnh")
+            text = "🚀  Bắt đầu tạo video từ tất cả cảnh"
+            self.veo3_btn_analyze.setText(text)
             # Xoá style inline → fallback về QSS gốc (#analyzeBtn)
             self.veo3_btn_analyze.setStyleSheet("")
+            if hasattr(self, "kol_btn_analyze"):
+                self.kol_btn_analyze.setText(text)
+                self.kol_btn_analyze.setStyleSheet("")
             self._stop_btn_running_animation()
 
     def _stop_all_veo3_threads(self):
@@ -1362,6 +1567,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             return
 
         if input_soluong <= 0:
+            return
+        if input_soluong > 10:
+            QMessageBox.warning(self, "Lỗi", "Số lượng cảnh tối đa là 10.")
             return
 
         # Khởi chạy thread để call API không làm đơ UI
@@ -1445,6 +1653,10 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         else:
             QMessageBox.warning(self, "Lỗi", "Không nhận được dữ liệu Prompt hợp lệ từ API (không tìm thấy prompt_1)!")
 
+    def _get_active_scene_prompt_boxes(self):
+        target_tab = self.tab_veo3 if self.tabWidget.currentIndex() == 0 else self.tab_kol
+        return target_tab.findChildren(QtWidgets.QTextEdit, "promptBox")
+
     def startThreadVeo3(self):
         # Nếu đang có luồng chạy → bấm nút = dừng tất cả
         if any(t.isRunning() for t in self.threads):
@@ -1472,6 +1684,16 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập API URL GPM (ví dụ: http://localhost:9495).")
             return
 
+        raw_reference_image_path = str(getattr(self, "reference_image_path", "") or "").strip()
+        reference_image_path = os.path.abspath(raw_reference_image_path) if raw_reference_image_path else ""
+        if not reference_image_path or not os.path.exists(reference_image_path):
+            QMessageBox.warning(
+                self,
+                "Thiếu ảnh tham chiếu",
+                "Vui lòng bấm 'Bấm để tạo hình tham chiếu nhân vật' và đợi ảnh hiển thị ở khung ẢNH THAM CHIẾU trước khi tạo video từng cảnh."
+            )
+            return
+
         # Đọc danh sách Profile ID từ ô nhập thủ công trên giao diện
         # Giữ nguyên vị trí từng dòng: luồng i lấy ID dòng i
         profile_id_list = []
@@ -1480,9 +1702,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             for line in proxy_text.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
-                    profile_id_list.append("")
-                else:
-                    profile_id_list.append(line)
+                    continue
+                profile_id_list.append(line)
         valid_count = sum(1 for p in profile_id_list if p)
         print(f"[Manager] Đọc được {valid_count}/{len(profile_id_list)} ID Profile.")
 
@@ -1502,6 +1723,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.total_threads = input_soluong
         self.completed_threads = 0
         self.running_threads = input_soluong  # Khởi đầu: tất cả luồng đều chạy
+        self._active_run_prompt_boxes = self._get_active_scene_prompt_boxes()
         
         # Đổi nút sang trạng thái đang chạy NGAY lập tức trước khi khởi động luồng
         self._set_veo3_btn_running(True)
@@ -1529,6 +1751,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
         # Khởi tạo GPM theo đúng số "cảnh" đã chọn
         for i in range(1, input_soluong + 1):
+            if self._is_stopping:
+                break
+
             # Lấy Profile ID theo index (dòng i-1 trong ô nhập)
             profile_id = profile_id_list[i - 1] if (i - 1) < len(profile_id_list) else ""
             
@@ -1542,8 +1767,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             
             # Lấy nội dung prompt hiển thị trên giao diện của cảnh tương ứng
             current_prompt = "test cảnh"
-            if (i - 1) < len(self.scene_prompt_boxes):
-                text = self.scene_prompt_boxes[i - 1].toPlainText().strip()
+            if (i - 1) < len(self._active_run_prompt_boxes):
+                text = self._active_run_prompt_boxes[i - 1].toPlainText().strip()
                 if text:
                     current_prompt = text
                     
@@ -1566,7 +1791,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 win_size=input_win_size,
                 win_pos=win_pos,
                 flow_settings=flow_settings,
-                save_dir=save_dir
+                save_dir=save_dir,
+                reference_image_path=reference_image_path
             )
 
             # Lắng nghe dữ liệu bắn về từ Thread để update log
@@ -1577,6 +1803,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             # Delay 1.5 giây giữa các luồng để tránh spam API GPM và treo máy
             # Dùng processEvents để UI không bị đơng cứng khi chờ
             for _ in range(15):  # 15 x 100ms = 1.5s
+                if self._is_stopping:
+                    break
                 QtWidgets.QApplication.processEvents()
                 QThread.msleep(100)
 
@@ -1699,8 +1927,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         if status == "Hoàn thành" or status.startswith("Lỗi") or status == "Đã dừng":
             if status == "Hoàn thành" and response_data and response_data != "-":
                 # Cập nhật text prompt cho cảnh tương ứng nếu có dữ liệu trả về
-                if 1 <= index <= len(self.scene_prompt_boxes):
-                    self.scene_prompt_boxes[index - 1].setPlainText(response_data)
+                prompt_boxes = getattr(self, "_active_run_prompt_boxes", self.scene_prompt_boxes)
+                if 1 <= index <= len(prompt_boxes):
+                    prompt_boxes[index - 1].setPlainText(response_data)
 
             # Tránh race condition: chỉ tăng nếu chưa vượt total
             if self.completed_threads < self.total_threads:
@@ -1878,6 +2107,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         except ValueError:
             QMessageBox.warning(self, "Lỗi", "Số lượng cảnh trên giao diện không hợp lệ.")
             return
+        if input_soluong > 10:
+            QMessageBox.warning(self, "Lỗi", "Số lượng cảnh tối đa là 10.")
+            return
 
         video_files = []
         missing_scenes = []
@@ -1921,6 +2153,26 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
     def createReferenceImage(self):
         """Gửi request POST tới webhook để tạo ảnh tham chiếu."""
+        api_url_gpm = self.le_api_url_gpm.text().strip()
+        profile_text = self.te_proxy_input.toPlainText().strip()
+        profiles = [p.strip() for p in profile_text.splitlines() if p.strip() and not p.strip().startswith("#")]
+        first_profile = profiles[0] if profiles else ""
+        save_dir = self.le_folder.text().strip()
+
+        if not api_url_gpm:
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng nhập API URL GPM trước khi tạo ảnh tham chiếu.")
+            return
+        if not first_profile:
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng nhập ít nhất 1 ID Profile GPM để chạy tạo ảnh.")
+            return
+        if not save_dir:
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng chọn thư mục lưu video/ảnh trước.")
+            return
+
+        self.ref_image_api_url_gpm = api_url_gpm
+        self.ref_image_profile_id = first_profile
+        self.ref_image_save_dir = save_dir
+
         if hasattr(self, 'veo3_btn_create_ref'):
             self.veo3_btn_create_ref.setText("⏳ Đang xử lý...")
             self.veo3_btn_create_ref.setEnabled(False)
@@ -2026,28 +2278,16 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 self.veo3_ref_txt.linkActivated.connect(self._show_full_ref_prompt)
             
             # --- CHẠY LUỒNG PLAYWRIGHT ĐỂ SINH VÀ TẢI ẢNH ---
-            api_url_gpm = self.le_api_url_gpm.text().strip()
             # Chuẩn hóa win_size sang format "W,H" (giống startThreadVeo3) trước khi truyền vào RefImageThread
             win_size_raw = self.cb_win_size.currentText()
             win_size = win_size_raw.replace("px", "").replace(":", ",")
-            save_dir = self.le_folder.text().strip()
-            
-            # Lấy ID profile đầu tiên
-            profile_text = self.te_proxy_input.toPlainText().strip()
-            profiles = [p.strip() for p in profile_text.splitlines() if p.strip()]
-            first_profile = profiles[0] if profiles else ""
-            
-            if not api_url_gpm:
+            api_url_gpm = getattr(self, "ref_image_api_url_gpm", "").strip()
+            first_profile = getattr(self, "ref_image_profile_id", "").strip()
+            save_dir = getattr(self, "ref_image_save_dir", "").strip()
+
+            if not api_url_gpm or not first_profile or not save_dir:
                 _reset_btn()
-                QMessageBox.warning(self, "Cảnh báo", "Vui lòng nhập API URL GPM trước khi tạo ảnh tham chiếu.")
-                return
-            if not first_profile:
-                _reset_btn()
-                QMessageBox.warning(self, "Cảnh báo", "Vui lòng nhập ít nhất 1 ID Profile GPM để chạy tạo ảnh.")
-                return
-            if not save_dir:
-                _reset_btn()
-                QMessageBox.warning(self, "Cảnh báo", "Vui lòng chọn thư mục lưu video/ảnh trước.")
+                QMessageBox.warning(self, "Cảnh báo", "Thiếu API URL GPM, ID Profile hoặc thư mục lưu ảnh. Vui lòng kiểm tra lại thông tin.")
                 return
 
             print(f"[Ảnh Tham Chiếu] Bắt đầu tiến trình tự động tải ảnh bằng Playwright...")
@@ -2074,6 +2314,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             
         if success:
             image_path = result_msg
+            self.reference_image_path = image_path
             print(f"[Ảnh Tham Chiếu] Tải ảnh hoàn tất: {image_path}")
             if hasattr(self, 'veo3_ref_img') and os.path.exists(image_path):
                 # Load ảnh lên bằng QPixmap

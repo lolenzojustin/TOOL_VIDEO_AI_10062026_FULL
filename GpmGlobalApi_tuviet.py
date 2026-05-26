@@ -4,6 +4,13 @@ import shutil
 import os
 import subprocess
 import threading
+import sys
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 PORT_LOCK = threading.Lock()
 NEXT_PORT = 40444
@@ -217,6 +224,10 @@ class Gpm:
             "window_pos": win_pos,
             "window_size": win_size,
             "addition_args": add_args,
+            "win_scale": 0.99,
+            "win_pos": win_pos,
+            "win_size": win_size,
+            "addination_args": add_args,
         }
 
         url = f"{apiurl_Gpm}/api/v1/profiles/start/{id_profile}"
@@ -248,14 +259,25 @@ class Gpm:
             return None
 
         data = response.get("data") or {}
-        remote_debugging_port = data.get("remote_debugging_port")
+        remote_debugging_address = (
+            data.get("remote_debugging_address")
+            or data.get("remote_debugging_addr")
+            or data.get("debugging_address")
+        )
+        if remote_debugging_address:
+            remote_debugging_address = str(remote_debugging_address).replace("http://", "").replace("https://", "").strip("/")
+            return remote_debugging_address
 
-        if not remote_debugging_port:
-            print(f"Không có remote_debugging_port trong data. Response: {response}")
-            return None
+        remote_debugging_port = (
+            data.get("remote_debugging_port")
+            or data.get("remote_port")
+            or data.get("debugging_port")
+        )
+        if remote_debugging_port:
+            return f"127.0.0.1:{remote_debugging_port}"
 
-        remote_debugging_address = f"127.0.0.1:{remote_debugging_port}"
-        return remote_debugging_address
+        print(f"Không có remote_debugging_address/remote_debugging_port trong data. Response: {response}")
+        return None
 
 
 
@@ -357,4 +379,4 @@ class Gpm:
 #     print("đã xóa profile vừa tạo")
 #     time.sleep(1000)
 
-# test26
+# test27
