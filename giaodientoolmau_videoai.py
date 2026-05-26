@@ -33,6 +33,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 # Import các file phụ trợ
 from tool_video_ai_layout_3_UI import Ui_Widget
 from GpmGlobalApi_tuviet import Gpm
+from kie_ai_auto import setup_kie_ai_connections
 
 class MultiThread(QThread):
     # Khai báo signal trả về: (Số thứ tự cảnh, trạng thái, kết quả)
@@ -1385,6 +1386,10 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         }
 
         self._load_config()
+        self._config_map["KIE_AI_API_KEY"] = self.kie_le_api_key
+        self._config_map["KIE_LANG"] = self.kie_cb_lang
+        self._config_map["KIE_LINK"] = self.kie_le_link
+        self._config_map["KIE_DESC"] = self.kie_le_desc
         self.scene_prompt_boxes = self.tab_veo3.findChildren(QtWidgets.QTextEdit, "promptBox")
         self.scene_preview_containers = self.tab_veo3.findChildren(QtWidgets.QStackedWidget, "previewContainer")
         self._active_run_prompt_boxes = self.scene_prompt_boxes
@@ -1411,23 +1416,23 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.is_concat_running = False
         self.prompt_scene_count = 0
 
-        # Kết nối sự kiện Click cho nút "BẮT ĐẦU TẠO VIDEO" bên tab Veo3
+        # Kết nối sự kiện Click cho nút "BẮT ĐẦU TẠO VIDEO" bên tab Veo3 và Kie AI
         self.veo3_btn_analyze.clicked.connect(self.startThreadVeo3)
-        if hasattr(self, "kol_btn_analyze"):
-            self.kol_btn_analyze.clicked.connect(self.startThreadVeo3)
+        if hasattr(self, "kie_btn_analyze"):
+            self.kie_btn_analyze.clicked.connect(self.startThreadVeo3)
         
         # Kết nối sự kiện Click cho nút "Bắt đầu phân tích tạo Prompt" cho cả 2 tab
         self.veo3_btn_merge.clicked.connect(self.analyzePrompts)
-        self.kol_btn_merge.clicked.connect(self.analyzePrompts)
+        self.kie_btn_merge.clicked.connect(self.analyzePrompts)
         
         # Kết nối nút cập nhật phiên bản cho cả hai tab
         self.veo3_btn_update.clicked.connect(self._update_version)
-        self.kol_btn_update.clicked.connect(self._update_version)
+        self.kie_btn_update.clicked.connect(self._update_version)
 
         # Kết nối nút ghép video cho cả hai tab
         self.concat_thread = None
         self.veo3_btn_concat.clicked.connect(self.concatAllScenes)
-        self.kol_btn_concat.clicked.connect(self.concatAllScenes)
+        self.kie_btn_concat.clicked.connect(self.concatAllScenes)
 
         # Kết nối nút tạo ảnh tham chiếu nhân vật
         if hasattr(self, 'veo3_btn_create_ref'):
@@ -1439,6 +1444,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         if hasattr(self, 'btn_open_folder'):
             self.btn_open_folder.clicked.connect(self._open_output_folder)
 
+        # Kết nối logic tự động Kie AI từ file riêng (kie_ai_auto.py)
+        setup_kie_ai_connections(self)
+
     def _animate_loading_button(self):
         self.dot_count = (self.dot_count + 1) % 4
         dots = "." * self.dot_count
@@ -1446,16 +1454,16 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         if self.is_prompt_running:
             text = f"⏱ Đang xử lý {self.prompt_scene_count} cảnh{dots}"
             self.veo3_btn_running.setText(text)
-            self.kol_btn_running.setText(text)
+            self.kie_btn_running.setText(text)
         elif self.running_threads > 0:
             text = f"⏱ Đang xử lý {self.running_threads} cảnh{dots}"
             self.veo3_btn_running.setText(text)
-            self.kol_btn_running.setText(text)
+            self.kie_btn_running.setText(text)
 
         if getattr(self, "is_concat_running", False):
             text = f"⏳ Đang ghép video vui lòng chờ{dots}"
             self.veo3_btn_concat.setText(text)
-            self.kol_btn_concat.setText(text)
+            self.kie_btn_concat.setText(text)
 
     def _start_btn_running_animation(self):
         if not self.loading_timer.isActive():
@@ -1467,15 +1475,15 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 "color: white; font-weight: bold; border-radius: 6px;"
             )
             self.veo3_btn_running.setStyleSheet(style)
-            self.kol_btn_running.setStyleSheet(style)
+            self.kie_btn_running.setStyleSheet(style)
 
     def _stop_btn_running_animation(self):
         if not self.is_prompt_running and self.running_threads == 0 and not getattr(self, "is_concat_running", False):
             self.loading_timer.stop()
             self.veo3_btn_running.setStyleSheet("")
-            self.kol_btn_running.setStyleSheet("")
+            self.kie_btn_running.setStyleSheet("")
             self.veo3_btn_running.setText("⏱ Đang xử lý 0 cảnh")
-            self.kol_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+            self.kie_btn_running.setText("⏱ Đang xử lý 0 cảnh")
 
     def _start_concat_animation(self):
         self.is_concat_running = True
@@ -1489,14 +1497,14 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "color: white; font-weight: bold; border-radius: 6px;"
         )
         self.veo3_btn_concat.setStyleSheet(style)
-        self.kol_btn_concat.setStyleSheet(style)
+        self.kie_btn_concat.setStyleSheet(style)
 
     def _stop_concat_animation(self):
         self.is_concat_running = False
         if not self.is_prompt_running and self.running_threads == 0:
             self.loading_timer.stop()
         self.veo3_btn_concat.setStyleSheet("")
-        self.kol_btn_concat.setStyleSheet("")
+        self.kie_btn_concat.setStyleSheet("")
 
     def _set_veo3_btn_running(self, is_running):
         """Đổi trạng thái nút BẮT ĐẦU TẠO VIDEO theo trạng thái luồng."""
@@ -1509,18 +1517,18 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             )
             self.veo3_btn_analyze.setText(text)
             self.veo3_btn_analyze.setStyleSheet(style)
-            if hasattr(self, "kol_btn_analyze"):
-                self.kol_btn_analyze.setText(text)
-                self.kol_btn_analyze.setStyleSheet(style)
+            if hasattr(self, "kie_btn_analyze"):
+                self.kie_btn_analyze.setText(text)
+                self.kie_btn_analyze.setStyleSheet(style)
             self._start_btn_running_animation()
         else:
             text = "🚀  Bắt đầu tạo video từ tất cả cảnh"
             self.veo3_btn_analyze.setText(text)
             # Xoá style inline → fallback về QSS gốc (#analyzeBtn)
             self.veo3_btn_analyze.setStyleSheet("")
-            if hasattr(self, "kol_btn_analyze"):
-                self.kol_btn_analyze.setText(text)
-                self.kol_btn_analyze.setStyleSheet("")
+            if hasattr(self, "kie_btn_analyze"):
+                self.kie_btn_analyze.setText(text)
+                self.kie_btn_analyze.setStyleSheet("")
             self._stop_btn_running_animation()
 
     def _stop_all_veo3_threads(self):
@@ -1547,16 +1555,16 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             )
             self.veo3_btn_merge.setText(text)
             self.veo3_btn_merge.setStyleSheet(style)
-            self.kol_btn_merge.setText(text)
-            self.kol_btn_merge.setStyleSheet(style)
+            self.kie_btn_merge.setText(text)
+            self.kie_btn_merge.setStyleSheet(style)
             self._start_btn_running_animation()
         else:
             self.is_prompt_running = False
             text = "🎬 Bắt đầu phân tích tạo Prompt"
             self.veo3_btn_merge.setText(text)
             self.veo3_btn_merge.setStyleSheet("")
-            self.kol_btn_merge.setText(text)
-            self.kol_btn_merge.setStyleSheet("")
+            self.kie_btn_merge.setText(text)
+            self.kie_btn_merge.setStyleSheet("")
             self._stop_btn_running_animation()
 
     def analyzePrompts(self):
@@ -1633,7 +1641,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             if current_tab_index == 0:
                 target_tab = self.tab_veo3
             else:
-                target_tab = self.tab_kol
+                target_tab = self.tab_kie_ai
                 
             # Tìm tất cả QTextEdit có objectName là "promptBox" trong tab hiện tại
             prompt_boxes = target_tab.findChildren(QtWidgets.QTextEdit, "promptBox")
@@ -1654,7 +1662,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             QMessageBox.warning(self, "Lỗi", "Không nhận được dữ liệu Prompt hợp lệ từ API (không tìm thấy prompt_1)!")
 
     def _get_active_scene_prompt_boxes(self):
-        target_tab = self.tab_veo3 if self.tabWidget.currentIndex() == 0 else self.tab_kol
+        target_tab = self.tab_veo3 if self.tabWidget.currentIndex() == 0 else self.tab_kie_ai
         return target_tab.findChildren(QtWidgets.QTextEdit, "promptBox")
 
     def startThreadVeo3(self):
@@ -1842,7 +1850,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             # Tìm tất cả previewContainer trên CẢ HAI tab để đảm bảo luôn gán đúng cảnh
             # (không phụ thuộc vào tab nào đang active trên giao diện)
             all_preview_containers = []
-            for tab in [self.tab_veo3, self.tab_kol]:
+            for tab in [self.tab_veo3, self.tab_kie_ai]:
                 containers = tab.findChildren(QtWidgets.QStackedWidget, "previewContainer")
                 all_preview_containers.extend(containers)
 
@@ -2144,7 +2152,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         # Bật animation và vô hiệu hóa nút
         self._start_concat_animation()
         self.veo3_btn_concat.setEnabled(False)
-        self.kol_btn_concat.setEnabled(False)
+        self.kie_btn_concat.setEnabled(False)
 
         # Chạy thread ghép video nền
         self.concat_thread = ConcatVideoThread(video_files, output_path)
@@ -2427,7 +2435,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 if current_tab_index == 0:
                     target_tab = self.tab_veo3
                 else:
-                    target_tab = self.tab_kol
+                    target_tab = self.tab_kie_ai
                     
                 prompt_boxes = target_tab.findChildren(QtWidgets.QTextEdit, "promptBox")
                 updated_count = 0
@@ -2477,9 +2485,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self._stop_concat_animation()
         original_text = "🎞️ Ghép tất cả cảnh thành 1 video"
         self.veo3_btn_concat.setText(original_text)
-        self.kol_btn_concat.setText(original_text)
+        self.kie_btn_concat.setText(original_text)
         self.veo3_btn_concat.setEnabled(True)
-        self.kol_btn_concat.setEnabled(True)
+        self.kie_btn_concat.setEnabled(True)
 
         if success:
             msg = QMessageBox(self)

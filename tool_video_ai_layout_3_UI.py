@@ -254,15 +254,17 @@ class Ui_Widget(object):
         self.tab_veo3     = QtWidgets.QWidget()
         self.tab_seedance = QtWidgets.QWidget()
         self.tab_kol      = QtWidgets.QWidget()
+        self.tab_kie_ai   = QtWidgets.QWidget()
 
         self._build_tab_content(self.tab_grok,     "grok")   # ẩn — chỉ để giữ widget
         self._build_tab_content(self.tab_veo3,     "veo3")
         self._build_tab_content(self.tab_seedance, "seed")   # ẩn — chỉ để giữ widget
-        self._build_kol_tab(self.tab_kol)
+        self._build_kol_tab(self.tab_kol)                    # ẩn — giữ widget cho config
+        self._build_kie_ai_tab(self.tab_kie_ai)
 
-        # Chỉ thêm 2 tab cần thiết: Veo3 (index 0) và KOL AI (index 1)
-        self.tabWidget.addTab(self.tab_veo3,     "  Chế độ Veo3 tạo video  ")
-        self.tabWidget.addTab(self.tab_kol,      "  🌟 Chế độ tạo video KOL AI  ")
+        # Chỉ thêm 2 tab cần thiết: Veo3 (index 0) và Kie AI (index 1)
+        self.tabWidget.addTab(self.tab_veo3,      "  Chế độ Veo3 tạo video  ")
+        self.tabWidget.addTab(self.tab_kie_ai,    "  🤖 Chế độ tạo video với Kie AI  ")
         self.tabWidget.setCurrentIndex(0)
 
         rv.addWidget(self.tabWidget)
@@ -619,6 +621,163 @@ class Ui_Widget(object):
         self.kol_ref_txt = ref_txt
 
         # ── Scene scroll (giống Veo3)
+        scene_scroll = QtWidgets.QScrollArea()
+        scene_scroll.setWidgetResizable(True)
+        scene_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scene_box = QtWidgets.QWidget()
+        scene_box.setObjectName("sceneBox")
+        scene_layout = QtWidgets.QVBoxLayout(scene_box)
+        scene_layout.setContentsMargins(0, 0, 0, 0)
+        scene_layout.setSpacing(_s(8, sc))
+        for i in range(1, 11):
+            card = self._scene_card(i, active=(i == 1))
+            scene_layout.addWidget(card)
+        scene_layout.addStretch()
+        scene_scroll.setWidget(scene_box)
+        layout.addWidget(scene_scroll, 1)
+
+    # ─── KIE AI TAB ───
+    def _build_kie_ai_tab(self, tab):
+        """Tab Kie AI: giống cấu trúc Veo3 nhưng thêm phần nhập Kie AI API Key."""
+        sc = self._sc
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(_s(14,sc), _s(10,sc), _s(14,sc), _s(10,sc))
+        layout.setSpacing(_s(8,sc))
+
+        # Top row: language + version + New + running (giống Veo3)
+        topRow = QtWidgets.QHBoxLayout()
+        kie_lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English", "Japanese"])
+        kie_lang_cb.setMinimumWidth(_s(220, sc))
+        kie_ver_lb = QtWidgets.QLabel("Phiên bản 1.0")
+        kie_ver_lb.setObjectName("verLabel")
+        kie_ver_update_btn = QtWidgets.QPushButton("⬆️  Cập nhật")
+        kie_ver_update_btn.setObjectName("updateBtn")
+        kie_ver_update_btn.setFixedHeight(_s(36, sc))
+        kie_ver_update_btn.setFixedWidth(_s(130, sc))
+        kie_new_btn = QtWidgets.QPushButton("● New")
+        kie_new_btn.setObjectName("newBtn")
+        kie_new_btn.setFixedHeight(_s(40, sc))
+        kie_btn_running = QtWidgets.QPushButton("⏱ Đang xử lý 0 cảnh")
+        kie_btn_running.setObjectName("actionBtnProcess")
+        kie_btn_running.setFixedHeight(_s(40, sc))
+        kie_btn_running.setCursor(QtCore.Qt.PointingHandCursor)
+        topRow.addWidget(kie_lang_cb)
+        topRow.addWidget(kie_ver_lb)
+        topRow.addWidget(kie_ver_update_btn)
+        topRow.addStretch()
+        topRow.addWidget(kie_new_btn)
+        topRow.addWidget(kie_btn_running)
+        layout.addLayout(topRow)
+        self.kie_cb_lang = kie_lang_cb
+        self.kie_btn_update = kie_ver_update_btn
+        self.kie_btn_new = kie_new_btn
+        self.kie_btn_running = kie_btn_running
+
+        # ── Kie AI API Key Panel (phần đặc trưng của tab này) ──
+        kieApiPanel = QtWidgets.QFrame()
+        kieApiPanel.setObjectName("kieApiPanel")
+        kieApiLay = QtWidgets.QHBoxLayout(kieApiPanel)
+        kieApiLay.setContentsMargins(_s(10,sc), _s(8,sc), _s(10,sc), _s(8,sc))
+        kieApiLay.setSpacing(_s(10,sc))
+
+        kieApiIcon = QtWidgets.QLabel("🔑")
+        kieApiIcon.setStyleSheet(f"font-size: {_s(22,sc)}px; background: transparent; border: none;")
+        kieApiIcon.setFixedWidth(_s(30, sc))
+
+        kieApiLabel = QtWidgets.QLabel("Kie AI API Key:")
+        kieApiLabel.setObjectName("kieApiLabel")
+        kieApiLabel.setFixedWidth(_s(120, sc))
+
+        kie_api_key_input = QtWidgets.QLineEdit()
+        kie_api_key_input.setPlaceholderText("Nhập Kie AI API Key của bạn tại đây...")
+        kie_api_key_input.setObjectName("kieApiKeyInput")
+        kie_api_key_input.setFixedHeight(_s(40, sc))
+        kie_api_key_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.kie_le_api_key = kie_api_key_input
+
+        kie_api_save_btn = QtWidgets.QPushButton("💾 Lưu")
+        kie_api_save_btn.setObjectName("saveBtn")
+        kie_api_save_btn.setFixedSize(_s(70, sc), _s(38, sc))
+        kie_api_save_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self.kie_btn_save_api = kie_api_save_btn
+
+        kieApiLay.addWidget(kieApiIcon)
+        kieApiLay.addWidget(kieApiLabel)
+        kieApiLay.addWidget(kie_api_key_input, 1)
+        kieApiLay.addWidget(kie_api_save_btn)
+        layout.addWidget(kieApiPanel)
+
+        # Link input (giống Veo3)
+        kie_le_link = QtWidgets.QLineEdit()
+        kie_le_link.setPlaceholderText("https://www.youtube.com/shorts/bQic0POmBHA")
+        kie_le_link.setObjectName("bigInput")
+        kie_le_link.setFixedHeight(_s(42, sc))
+        layout.addWidget(kie_le_link)
+        self.kie_le_link = kie_le_link
+
+        # Desc input (giống Veo3)
+        kie_le_desc = QtWidgets.QLineEdit()
+        kie_le_desc.setPlaceholderText("Mô tả thêm (tùy chọn)...")
+        kie_le_desc.setObjectName("bigInput")
+        kie_le_desc.setFixedHeight(_s(42, sc))
+        layout.addWidget(kie_le_desc)
+        self.kie_le_desc = kie_le_desc
+
+        # Combined button row: Analyze + Prompt + Rerun + Concat (giống Veo3)
+        btnRow = QtWidgets.QHBoxLayout()
+        btnRow.setSpacing(_s(8, sc))
+        kie_btn_analyze = QtWidgets.QPushButton("🚀  Bắt đầu tạo video từ tất cả cảnh")
+        kie_btn_analyze.setObjectName("analyzeBtn")
+        kie_btn_analyze.setFixedHeight(_s(46, sc))
+        kie_btn_analyze.setCursor(QtCore.Qt.PointingHandCursor)
+        btnRow.addWidget(kie_btn_analyze, 1)
+        self.kie_btn_analyze = kie_btn_analyze
+        kie_actions = [
+            ("🎬 Bắt đầu phân tích tạo Prompt",  "actionBtnMerge",   "kie_btn_merge"),
+            ("🔁 Chạy lại cảnh nhất định",  "actionBtnRerun",   "kie_btn_rerun"),
+            ("🎞️ Ghép tất cả cảnh thành 1 video", "actionBtnConcat", "kie_btn_concat"),
+        ]
+        for text, obj, attr in kie_actions:
+            b = QtWidgets.QPushButton(text)
+            b.setObjectName(obj)
+            b.setFixedHeight(_s(46, sc))
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            btnRow.addWidget(b, 1)
+            setattr(self, attr, b)
+        layout.addLayout(btnRow)
+
+        # Reference image box (giống Veo3)
+        refBox = QtWidgets.QFrame()
+        refBox.setObjectName("refBox")
+        refBox.setFixedHeight(_s(95, sc))
+        refLayout = QtWidgets.QHBoxLayout(refBox)
+        refLayout.setContentsMargins(_s(10,sc), _s(6,sc), _s(10,sc), _s(6,sc))
+        refLayout.setSpacing(_s(12,sc))
+
+        ref_img_lb = QtWidgets.QLabel("ẢNH THAM CHIẾU")
+        ref_img_lb.setObjectName("refImgBox")
+        ref_img_lb.setAlignment(QtCore.Qt.AlignCenter)
+        ref_img_lb.setFixedWidth(_s(200, sc))
+
+        kie_btn_create_ref = QtWidgets.QPushButton("🖼 Bấm để tạo hình tham chiếu nhân vật")
+        kie_btn_create_ref.setObjectName("btnCreateRef")
+        kie_btn_create_ref.setCursor(QtCore.Qt.PointingHandCursor)
+        self.kie_btn_create_ref = kie_btn_create_ref
+
+        ref_txt = QtWidgets.QLabel(
+            "Nên tạo ảnh tham chiếu nhân vật trước khi bấm 'Bắt đầu phân tích tạo prompt' để các nhân vật trong tất cả cảnh được đồng nhất"
+        )
+        ref_txt.setObjectName("refNoteText")
+        ref_txt.setWordWrap(True)
+
+        refLayout.addWidget(ref_img_lb)
+        refLayout.addWidget(kie_btn_create_ref)
+        refLayout.addWidget(ref_txt, 1)
+        layout.addWidget(refBox)
+        self.kie_ref_img = ref_img_lb
+        self.kie_ref_txt = ref_txt
+
+        # Scene scroll (giống Veo3)
         scene_scroll = QtWidgets.QScrollArea()
         scene_scroll.setWidgetResizable(True)
         scene_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -1022,7 +1181,7 @@ class Ui_Widget(object):
             border: 1px solid #7c3aed;
         }}
 
-        /* ── KOL TAB ── */
+        /* ── KOL TAB (ẩn, giữ widget cho config) ── */
         #kolAnalyzeBtn {{
             background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #be185d, stop:1 #ec4899);
             border: none; color: white; font-size: {_s(15,sc)}px; font-weight: bold;
@@ -1051,6 +1210,24 @@ class Ui_Widget(object):
         }}
         #kolUploadBtn:hover {{ background: #6d28d9; }}
 
+        /* ── KIE AI TAB ── */
+        #kieApiPanel {{
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                stop:0 #0c2135, stop:1 #0f172a);
+            border: 2px solid #0ea5e9;
+            border-radius: {_s(10,sc)}px;
+        }}
+        #kieApiLabel {{
+            color: #38bdf8; font-size: {fs}px; font-weight: bold;
+            background: transparent; border: none;
+        }}
+        #kieApiKeyInput {{
+            background: #111827; border: 1px solid #0ea5e9;
+            border-radius: {_s(6,sc)}px; color: #e5e7eb;
+            padding: 0 {_s(10,sc)}px; font-size: {fs}px;
+        }}
+        #kieApiKeyInput:focus {{ border: 1px solid #38bdf8; }}
+
         /* ── MISC ── */
         #hline {{ background: #1e293b; color: #1e293b; max-height: 1px; }}
 
@@ -1072,7 +1249,7 @@ class Ui_Widget(object):
         self.centralwidget.parent().setStyleSheet(qss)
 
     def retranslateUi(self, Widget):
-        Widget.setWindowTitle("🎬 AI Video Tool - Veo3 / KOL AI")
+        Widget.setWindowTitle("🎬 AI Video Tool - Veo3 / Kie AI")
 
 # test 1
 # if __name__ == "__main__":
