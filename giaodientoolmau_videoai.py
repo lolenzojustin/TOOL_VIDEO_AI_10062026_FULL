@@ -6,6 +6,8 @@ import threading
 import base64
 import requests
 
+REFERENCE_IMAGE_API_TIMEOUT = 8 * 60
+
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -2200,7 +2202,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         def worker(data):
             try:
                 url = "https://n8n.aiplt.io.vn/webhook/webhook_get_data_tool"
-                response = requests.post(url, json=data, timeout=60)
+                response = requests.post(url, json=data, timeout=REFERENCE_IMAGE_API_TIMEOUT)
                 if response.status_code == 200:
                     try:
                         res_json = response.json()
@@ -2388,7 +2390,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                             df.write(json.dumps(data, ensure_ascii=False, indent=2))
                     except Exception as e:
                         pass
-                    resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=60)
+                    resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=REFERENCE_IMAGE_API_TIMEOUT)
                 print(f"[Webhook Ảnh TC] ✅ Gửi xong — HTTP {resp.status_code}: {resp.text[:200]}")
                 if resp.status_code == 200:
                     try:
