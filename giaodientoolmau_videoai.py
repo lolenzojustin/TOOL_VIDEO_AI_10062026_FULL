@@ -6,7 +6,9 @@ import threading
 import base64
 import requests
 
-REFERENCE_IMAGE_API_TIMEOUT = 8 * 60
+# Thoi gian cho toi da khi goi API tao anh tham chieu. API tra nhanh hon thi chay tiep ngay.
+REFERENCE_IMAGE_API_MAX_TIMEOUT = 10 * 60
+REFERENCE_IMAGE_PROMPT_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/webhook_get_data_tool"
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -2201,41 +2203,51 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
         def worker(data):
             try:
-                url = "https://n8n.aiplt.io.vn/webhook/webhook_get_data_tool"
-                response = requests.post(url, json=data, timeout=REFERENCE_IMAGE_API_TIMEOUT)
-                if response.status_code == 200:
-                    try:
-                        res_json = response.json()
-                    except Exception as e:
-                        self.ref_image_signal.emit(False, f"Lỗi parse JSON: {str(e)}\n\nResponse:\n{response.text[:200]}")
-                        return
-                        
-                    res_dict = {}
-                    if isinstance(res_json, list) and len(res_json) > 0 and isinstance(res_json[0], dict):
-                        res_dict = res_json[0]
-                    elif isinstance(res_json, dict):
-                        res_dict = res_json
-                        
-                    prompt_text = res_dict.get("Prompt ảnh tham chiếu", "")
+                print(f"[Ảnh Tham Chiếu] Đang gọi webhook tạo prompt: {REFERENCE_IMAGE_PROMPT_WEBHOOK_URL} (timeout {REFERENCE_IMAGE_API_MAX_TIMEOUT}s)")
+                response = requests.post(
+                    REFERENCE_IMAGE_PROMPT_WEBHOOK_URL,
+                    json=data,
+                    timeout=REFERENCE_IMAGE_API_MAX_TIMEOUT
+                )
+
+                if response.status_code != 200:
+                    self.ref_image_signal.emit(False, f"Lỗi HTTP {response.status_code}: {response.text[:500]}")
+                    return
+
+                try:
+                    res_json = response.json()
+                except Exception as e:
+                    self.ref_image_signal.emit(False, f"Lỗi parse JSON: {str(e)}\n\nResponse:\n{response.text[:200]}")
+                    return
                     
-                    if prompt_text:
-                        result_payload = {
-                            "prompt": prompt_text,
-                            "phong_cach": res_dict.get("phong_cach", ""),
-                            "ngon_ngu": res_dict.get("ngon_ngu", ""),
-                            "mo_ta_them": res_dict.get("mo_ta_them", ""),
-                            "Clone Content": res_dict.get("Clone Content", ""),
-                            "Clone %": res_dict.get("Clone %", ""),
-                            "giong_nhan_vat": res_dict.get("giong_nhan_vat", ""),
-                            "so_canh": res_dict.get("so_canh", "")
-                        }
-                        self.ref_image_signal.emit(True, result_payload)
-                    else:
-                        self.ref_image_signal.emit(False, f"API không có trường 'Prompt ảnh tham chiếu'. Dữ liệu trả về: {str(res_json)[:300]}")
+                res_dict = {}
+                if isinstance(res_json, list) and len(res_json) > 0 and isinstance(res_json[0], dict):
+                    res_dict = res_json[0]
+                elif isinstance(res_json, dict):
+                    res_dict = res_json
+                    
+                prompt_text = res_dict.get("Prompt ảnh tham chiếu", "")
+                
+                if prompt_text:
+                    result_payload = {
+                        "prompt": prompt_text,
+                        "phong_cach": res_dict.get("phong_cach", ""),
+                        "ngon_ngu": res_dict.get("ngon_ngu", ""),
+                        "mo_ta_them": res_dict.get("mo_ta_them", ""),
+                        "Clone Content": res_dict.get("Clone Content", ""),
+                        "Clone %": res_dict.get("Clone %", ""),
+                        "giong_nhan_vat": res_dict.get("giong_nhan_vat", ""),
+                        "so_canh": res_dict.get("so_canh", "")
+                    }
+                    self.ref_image_signal.emit(True, result_payload)
                 else:
-                    self.ref_image_signal.emit(False, f"Lỗi HTTP {response.status_code}: {response.text}")
-            except Exception as e:
+                    self.ref_image_signal.emit(False, f"API không có trường 'Prompt ảnh tham chiếu'. Dữ liệu trả về: {str(res_json)[:300]}")
+            except requests.Timeout:
+                self.ref_image_signal.emit(False, "Timeout: API tạo prompt ảnh tham chiếu không trả kết quả sau 10 phút.")
+            except requests.RequestException as e:
                 self.ref_image_signal.emit(False, f"Lỗi kết nối API: {str(e)}")
+            except Exception as e:
+                self.ref_image_signal.emit(False, f"Lỗi API: {str(e)}")
                 
         import threading
         t = threading.Thread(target=worker, args=(payload,))
@@ -2390,7 +2402,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                             df.write(json.dumps(data, ensure_ascii=False, indent=2))
                     except Exception as e:
                         pass
-                    resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=REFERENCE_IMAGE_API_TIMEOUT)
+                    resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=REFERENCE_IMAGE_API_MAX_TIMEOUT)
                 print(f"[Webhook Ảnh TC] ✅ Gửi xong — HTTP {resp.status_code}: {resp.text[:200]}")
                 if resp.status_code == 200:
                     try:
