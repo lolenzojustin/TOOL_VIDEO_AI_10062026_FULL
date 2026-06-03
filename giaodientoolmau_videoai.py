@@ -7,7 +7,12 @@ import base64
 import requests
 
 # Thoi gian cho toi da khi goi API tao anh tham chieu. API tra nhanh hon thi chay tiep ngay.
-REFERENCE_IMAGE_API_MAX_TIMEOUT = 10 * 60
+REFERENCE_IMAGE_API_MAX_TIMEOUT = 30 * 60
+REFERENCE_IMAGE_API_MAX_RETRIES = 3
+REFERENCE_IMAGE_API_RETRY_DELAY_SECONDS = 20
+REFERENCE_IMAGE_API_RETRY_STATUS_CODES = {502, 503, 504}
+REFERENCE_IMAGE_GENERATION_MAX_TIMEOUT = 10 * 60
+REFERENCE_IMAGE_GENERATION_START_TIMEOUT = 120
 REFERENCE_IMAGE_PROMPT_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/webhook_get_data_tool"
 
 for _stream in (sys.stdout, sys.stderr):
@@ -18,10 +23,15 @@ for _stream in (sys.stdout, sys.stderr):
 
 if "--self-test-moviepy" in sys.argv:
     try:
+        import importlib.metadata as package_metadata
+        import imageio
         from moviepy.video.io.VideoFileClip import VideoFileClip
         from moviepy.video.compositing.CompositeVideoClip import concatenate_videoclips
         import imageio_ffmpeg
 
+        package_metadata.version("imageio")
+        package_metadata.version("imageio-ffmpeg")
+        package_metadata.version("moviepy")
         imageio_ffmpeg.get_ffmpeg_exe()
         sys.exit(0)
     except Exception as exc:
@@ -1150,7 +1160,7 @@ class RefImageThread(QThread):
 
                 # Chờ sinh ảnh
                 print("[Ảnh Tham Chiếu] Đang đợi sinh ảnh...")
-                timeout = 180
+                timeout = REFERENCE_IMAGE_GENERATION_MAX_TIMEOUT
                 elapsed = 0
                 has_started = False
                 disappear_count = 0
@@ -1184,8 +1194,8 @@ class RefImageThread(QThread):
                             if disappear_count >= 10:
                                 break
                         else:
-                            if elapsed > 60:
-                                raise RuntimeError("Timeout: Không thấy tiến trình tạo ảnh sau 60s.")
+                            if elapsed > REFERENCE_IMAGE_GENERATION_START_TIMEOUT:
+                                raise RuntimeError(f"Timeout: Không thấy tiến trình tạo ảnh sau {REFERENCE_IMAGE_GENERATION_START_TIMEOUT}s.")
                     
                     if self._stop_event.wait(2): raise InterruptedError("Đã dừng")
                     elapsed += 2
@@ -2163,6 +2173,56 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.concat_thread.finished.connect(self._on_concat_finished)
         self.concat_thread.start()
 
+    def _build_local_reference_prompt_payload(self, data, source_text):
+        style = data.get("phong_cach", "") or "Cartoon"
+        language = data.get("ngon_ngu", "")
+        source_text = str(source_text or "").strip()
+        prompt_text = f"""Read and analyze the following story/content: "{source_text}".
+
+Identify every character appearing in the story/content, then generate a single unified cinematic character lineup reference sheet containing all characters standing together in one frame.
+
+Requirements:
+
+Every character must have a unique and visually distinctive appearance consistent with the story/content.
+If a character's appearance is not clearly described, intelligently infer a suitable design based on the story context, personality, role, era, and environment.
+All characters must maintain consistent visual style, proportions, rendering quality, and design language.
+Full body visible for every character from head to toe.
+No cropped limbs, no cut off feet, no missing hands.
+Characters standing side by side in a clean symmetrical lineup composition.
+Equal spacing between characters.
+No overlapping characters.
+Front-facing pose.
+Eye-level camera.
+Orthographic character sheet feel mixed with cinematic realism.
+High character readability.
+Consistent proportions and scale between all characters.
+Same rendering style, same material quality, same lighting setup.
+Studio soft lighting with realistic cinematic lighting and shadows.
+Neutral studio background or simple minimal background.
+Each character must have their name clearly displayed beneath them.
+Highly optimized for AI image generation and video character consistency.
+Movie-quality character design.
+8K ultra detailed.
+
+Image Style: {style}
+Language: {language}
+
+Style Keywords:
+cinematic character lineup, full body, character reference sheet, multiple characters standing side by side, consistent character design, symmetrical lineup composition, equal spacing between characters, front facing pose, eye-level camera, orthographic character sheet feel, same rendering style, ultra detailed, realistic lighting, studio soft lighting, movie character design, sharp focus, cinematic realism, high character readability, consistent proportions, no overlapping characters, entire body visible, 8k
+
+Negative Prompt:
+cropped body, cut off feet, cut off hands, missing limbs, extra limbs, extra fingers, fused fingers, duplicated character, overlapping characters, merged bodies, bad anatomy, distorted proportions, inconsistent proportions, inconsistent style, different art styles, blurry face, blurry details, low detail, low quality, pixelated, deformed body, malformed hands, floating limbs, asymmetrical eyes, messy composition, incorrect spacing, wrong scale, tilted camera, side pose, back pose, incomplete body, out of frame, poorly drawn face, poorly drawn hands, duplicate accessories, unrealistic lighting, oversaturated, noisy image, watermark, text artifacts, background clutter, motion blur, mutated anatomy, broken limbs, warped face, cartoonish distortion, random objects, disconnected body parts"""
+        return {
+            "prompt": prompt_text,
+            "phong_cach": style,
+            "ngon_ngu": language,
+            "mo_ta_them": data.get("mo_ta_them", ""),
+            "Clone Content": data.get("Clone Content", ""),
+            "Clone %": data.get("Clone %", ""),
+            "giong_nhan_vat": data.get("giong_nhan_vat", ""),
+            "so_canh": data.get("so_canh", "")
+        }
+
     def createReferenceImage(self):
         """Gửi request POST tới webhook để tạo ảnh tham chiếu."""
         api_url_gpm = self.le_api_url_gpm.text().strip()
@@ -2170,6 +2230,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         profiles = [p.strip() for p in profile_text.splitlines() if p.strip() and not p.strip().startswith("#")]
         first_profile = profiles[0] if profiles else ""
         save_dir = self.le_folder.text().strip()
+        link_youtube = self.veo3_le_link.text().strip()
+        mo_ta_them = self.veo3_le_desc.text().strip()
 
         if not api_url_gpm:
             QMessageBox.warning(self, "Cảnh báo", "Vui lòng nhập API URL GPM trước khi tạo ảnh tham chiếu.")
@@ -2179,6 +2241,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             return
         if not save_dir:
             QMessageBox.warning(self, "Cảnh báo", "Vui lòng chọn thư mục lưu video/ảnh trước.")
+            return
+        if not link_youtube and not mo_ta_them:
+            QMessageBox.warning(self, "Cảnh báo", "Vui lòng nhập link video YouTube hoặc mô tả thêm trước khi tạo ảnh tham chiếu.")
             return
 
         self.ref_image_api_url_gpm = api_url_gpm
@@ -2191,8 +2256,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
         # Thu thập 8 thông tin từ giao diện (bắt buộc gọi từ main thread)
         payload = {
-            "link_youtube": self.veo3_le_link.text().strip(),
-            "mo_ta_them": self.veo3_le_desc.text().strip(),
+            "link_youtube": link_youtube,
+            "mo_ta_them": mo_ta_them,
             "mo_hinh_sinh_kich_ban": self.cb_ai_model.currentText(),
             "phong_cach": self.cb_style.currentText(),
             "ngon_ngu": self.cb_language.currentText(),
@@ -2201,14 +2266,30 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "so_canh": self.cb_scene_count.currentText()
         }
 
+        if not link_youtube and mo_ta_them:
+            print("[Ảnh Tham Chiếu] Không có link YouTube, dùng trực tiếp phần mô tả thêm để tạo prompt ảnh tham chiếu.")
+            self.ref_image_signal.emit(True, self._build_local_reference_prompt_payload(payload, mo_ta_them))
+            return
+
+        webhook_payload = dict(payload)
+        if link_youtube and not mo_ta_them:
+            webhook_payload["mo_ta_them"] = "Không có mô tả thêm. Hãy phân tích nội dung từ link YouTube."
+
         def worker(data):
             try:
-                print(f"[Ảnh Tham Chiếu] Đang gọi webhook tạo prompt: {REFERENCE_IMAGE_PROMPT_WEBHOOK_URL} (timeout {REFERENCE_IMAGE_API_MAX_TIMEOUT}s)")
-                response = requests.post(
-                    REFERENCE_IMAGE_PROMPT_WEBHOOK_URL,
-                    json=data,
-                    timeout=REFERENCE_IMAGE_API_MAX_TIMEOUT
-                )
+                response = None
+                for attempt in range(1, REFERENCE_IMAGE_API_MAX_RETRIES + 1):
+                    print(f"[Ảnh Tham Chiếu] Đang gọi webhook tạo prompt lần {attempt}/{REFERENCE_IMAGE_API_MAX_RETRIES}: {REFERENCE_IMAGE_PROMPT_WEBHOOK_URL} (timeout {REFERENCE_IMAGE_API_MAX_TIMEOUT}s)")
+                    response = requests.post(
+                        REFERENCE_IMAGE_PROMPT_WEBHOOK_URL,
+                        json=data,
+                        timeout=REFERENCE_IMAGE_API_MAX_TIMEOUT
+                    )
+                    if response.status_code not in REFERENCE_IMAGE_API_RETRY_STATUS_CODES:
+                        break
+                    if attempt < REFERENCE_IMAGE_API_MAX_RETRIES:
+                        print(f"[Ảnh Tham Chiếu] HTTP {response.status_code}, chờ {REFERENCE_IMAGE_API_RETRY_DELAY_SECONDS}s rồi thử lại...")
+                        time.sleep(REFERENCE_IMAGE_API_RETRY_DELAY_SECONDS)
 
                 if response.status_code != 200:
                     self.ref_image_signal.emit(False, f"Lỗi HTTP {response.status_code}: {response.text[:500]}")
@@ -2217,6 +2298,15 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 try:
                     res_json = response.json()
                 except Exception as e:
+                    fallback_source = (data.get("mo_ta_them") or "").strip()
+                    if fallback_source and fallback_source != "Không có mô tả thêm. Hãy phân tích nội dung từ link YouTube.":
+                        print("[Ảnh Tham Chiếu] Webhook trả JSON lỗi, dùng mô tả thêm để tạo prompt ảnh tham chiếu.")
+                        self.ref_image_signal.emit(True, self._build_local_reference_prompt_payload(data, fallback_source))
+                        return
+                    if (data.get("link_youtube") or "").strip():
+                        print("[Ảnh Tham Chiếu] Webhook trả JSON lỗi, dùng link YouTube làm nguồn mô tả dự phòng.")
+                        self.ref_image_signal.emit(True, self._build_local_reference_prompt_payload(data, data.get("link_youtube", "")))
+                        return
                     self.ref_image_signal.emit(False, f"Lỗi parse JSON: {str(e)}\n\nResponse:\n{response.text[:200]}")
                     return
                     
@@ -2241,16 +2331,24 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                     }
                     self.ref_image_signal.emit(True, result_payload)
                 else:
-                    self.ref_image_signal.emit(False, f"API không có trường 'Prompt ảnh tham chiếu'. Dữ liệu trả về: {str(res_json)[:300]}")
+                    fallback_source = (data.get("mo_ta_them") or "").strip()
+                    if fallback_source == "Không có mô tả thêm. Hãy phân tích nội dung từ link YouTube.":
+                        fallback_source = ""
+                    fallback_source = fallback_source or (data.get("link_youtube") or "").strip()
+                    if fallback_source:
+                        print("[Ảnh Tham Chiếu] API không có prompt ảnh tham chiếu, dùng dữ liệu nhập làm prompt dự phòng.")
+                        self.ref_image_signal.emit(True, self._build_local_reference_prompt_payload(data, fallback_source))
+                    else:
+                        self.ref_image_signal.emit(False, f"API không có trường 'Prompt ảnh tham chiếu'. Dữ liệu trả về: {str(res_json)[:300]}")
             except requests.Timeout:
-                self.ref_image_signal.emit(False, "Timeout: API tạo prompt ảnh tham chiếu không trả kết quả sau 10 phút.")
+                self.ref_image_signal.emit(False, "Timeout: API tạo prompt ảnh tham chiếu không trả kết quả sau 30 phút.")
             except requests.RequestException as e:
                 self.ref_image_signal.emit(False, f"Lỗi kết nối API: {str(e)}")
             except Exception as e:
                 self.ref_image_signal.emit(False, f"Lỗi API: {str(e)}")
                 
         import threading
-        t = threading.Thread(target=worker, args=(payload,))
+        t = threading.Thread(target=worker, args=(webhook_payload,))
         t.daemon = True
         t.start()
 
@@ -2402,7 +2500,16 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                             df.write(json.dumps(data, ensure_ascii=False, indent=2))
                     except Exception as e:
                         pass
-                    resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=REFERENCE_IMAGE_API_MAX_TIMEOUT)
+                    resp = None
+                    for attempt in range(1, REFERENCE_IMAGE_API_MAX_RETRIES + 1):
+                        print(f"[Webhook Ảnh TC] Đang gửi POST lần {attempt}/{REFERENCE_IMAGE_API_MAX_RETRIES} đến {WEBHOOK_URL} ...")
+                        img_file.seek(0)
+                        resp = requests.post(WEBHOOK_URL, data=data, files=files, timeout=REFERENCE_IMAGE_API_MAX_TIMEOUT)
+                        if resp.status_code not in REFERENCE_IMAGE_API_RETRY_STATUS_CODES:
+                            break
+                        if attempt < REFERENCE_IMAGE_API_MAX_RETRIES:
+                            print(f"[Webhook Ảnh TC] HTTP {resp.status_code}, chờ {REFERENCE_IMAGE_API_RETRY_DELAY_SECONDS}s rồi thử lại...")
+                            time.sleep(REFERENCE_IMAGE_API_RETRY_DELAY_SECONDS)
                 print(f"[Webhook Ảnh TC] ✅ Gửi xong — HTTP {resp.status_code}: {resp.text[:200]}")
                 if resp.status_code == 200:
                     try:

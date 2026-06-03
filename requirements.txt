@@ -16,6 +16,8 @@ gspread==5.9.0
 gspread-dataframe==3.3.1
 h11==0.16.0
 idna==3.10
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
 ipaddress==1.0.23
 lxml==6.0.2
 moviepy==2.2.1
