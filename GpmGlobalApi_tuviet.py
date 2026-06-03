@@ -259,10 +259,15 @@ class Gpm:
             return None
 
         data = response.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
         remote_debugging_address = (
             data.get("remote_debugging_address")
             or data.get("remote_debugging_addr")
             or data.get("debugging_address")
+            or response.get("remote_debugging_address")
+            or response.get("remote_debugging_addr")
+            or response.get("debugging_address")
         )
         if remote_debugging_address:
             remote_debugging_address = str(remote_debugging_address).replace("http://", "").replace("https://", "").strip("/")
@@ -272,6 +277,9 @@ class Gpm:
             data.get("remote_debugging_port")
             or data.get("remote_port")
             or data.get("debugging_port")
+            or response.get("remote_debugging_port")
+            or response.get("remote_port")
+            or response.get("debugging_port")
         )
         if remote_debugging_port:
             return f"127.0.0.1:{remote_debugging_port}"
@@ -379,4 +387,4 @@ class Gpm:
 #     print("đã xóa profile vừa tạo")
 #     time.sleep(1000)
 
-# test32
+# test33

@@ -936,19 +936,29 @@ class RefImageThread(QThread):
                 raise RuntimeError("Chưa có ID Profile.")
 
             remote_addr = None
-            for open_attempt in range(2):
+            print(f"[Ảnh Tham Chiếu] Chuẩn bị mở GPM profile '{profile_id}' với API '{self.api_url_gpm}', win_size='{self.win_size}'.")
+            try:
+                gpm.close_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id)
+                if self._stop_event.wait(2):
+                    raise InterruptedError("Đã dừng")
+            except InterruptedError:
+                raise
+            except Exception as close_before_open_err:
+                print(f"[Ảnh Tham Chiếu] Bỏ qua lỗi đóng profile trước khi mở: {close_before_open_err}")
+
+            for open_attempt in range(1, 6):
                 remote_addr = gpm.open_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id, win_pos=self.win_pos, win_size=self.win_size)
                 if remote_addr:
                     break
-                print(f"[Ảnh Tham Chiếu] Không mở được Profile GPM lần {open_attempt + 1}, thử đóng profile rồi mở lại...")
+                print(f"[Ảnh Tham Chiếu] Không mở được Profile GPM lần {open_attempt}/5, thử đóng profile rồi mở lại...")
                 try:
                     gpm.close_profile(apiurl_Gpm=self.api_url_gpm, id_profile=profile_id)
                 except Exception:
                     pass
-                if self._stop_event.wait(2):
+                if self._stop_event.wait(4):
                     raise InterruptedError("Đã dừng")
             if not remote_addr:
-                raise RuntimeError("Không thể mở Profile GPM. Hãy kiểm tra GPM Global đang mở, API URL đúng và ID Profile tồn tại.")
+                raise RuntimeError(f"Không thể mở Profile GPM sau 5 lần. API URL: {self.api_url_gpm} | Profile ID: {profile_id}. Hãy kiểm tra GPM Global đang mở, API URL đúng và ID Profile tồn tại.")
 
             if not self.is_running: return
 
@@ -2173,56 +2183,6 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.concat_thread.finished.connect(self._on_concat_finished)
         self.concat_thread.start()
 
-    def _build_local_reference_prompt_payload(self, data, source_text):
-        style = data.get("phong_cach", "") or "Cartoon"
-        language = data.get("ngon_ngu", "")
-        source_text = str(source_text or "").strip()
-        prompt_text = f"""Read and analyze the following story/content: "{source_text}".
-
-Identify every character appearing in the story/content, then generate a single unified cinematic character lineup reference sheet containing all characters standing together in one frame.
-
-Requirements:
-
-Every character must have a unique and visually distinctive appearance consistent with the story/content.
-If a character's appearance is not clearly described, intelligently infer a suitable design based on the story context, personality, role, era, and environment.
-All characters must maintain consistent visual style, proportions, rendering quality, and design language.
-Full body visible for every character from head to toe.
-No cropped limbs, no cut off feet, no missing hands.
-Characters standing side by side in a clean symmetrical lineup composition.
-Equal spacing between characters.
-No overlapping characters.
-Front-facing pose.
-Eye-level camera.
-Orthographic character sheet feel mixed with cinematic realism.
-High character readability.
-Consistent proportions and scale between all characters.
-Same rendering style, same material quality, same lighting setup.
-Studio soft lighting with realistic cinematic lighting and shadows.
-Neutral studio background or simple minimal background.
-Each character must have their name clearly displayed beneath them.
-Highly optimized for AI image generation and video character consistency.
-Movie-quality character design.
-8K ultra detailed.
-
-Image Style: {style}
-Language: {language}
-
-Style Keywords:
-cinematic character lineup, full body, character reference sheet, multiple characters standing side by side, consistent character design, symmetrical lineup composition, equal spacing between characters, front facing pose, eye-level camera, orthographic character sheet feel, same rendering style, ultra detailed, realistic lighting, studio soft lighting, movie character design, sharp focus, cinematic realism, high character readability, consistent proportions, no overlapping characters, entire body visible, 8k
-
-Negative Prompt:
-cropped body, cut off feet, cut off hands, missing limbs, extra limbs, extra fingers, fused fingers, duplicated character, overlapping characters, merged bodies, bad anatomy, distorted proportions, inconsistent proportions, inconsistent style, different art styles, blurry face, blurry details, low detail, low quality, pixelated, deformed body, malformed hands, floating limbs, asymmetrical eyes, messy composition, incorrect spacing, wrong scale, tilted camera, side pose, back pose, incomplete body, out of frame, poorly drawn face, poorly drawn hands, duplicate accessories, unrealistic lighting, oversaturated, noisy image, watermark, text artifacts, background clutter, motion blur, mutated anatomy, broken limbs, warped face, cartoonish distortion, random objects, disconnected body parts"""
-        return {
-            "prompt": prompt_text,
-            "phong_cach": style,
-            "ngon_ngu": language,
-            "mo_ta_them": data.get("mo_ta_them", ""),
-            "Clone Content": data.get("Clone Content", ""),
-            "Clone %": data.get("Clone %", ""),
-            "giong_nhan_vat": data.get("giong_nhan_vat", ""),
-            "so_canh": data.get("so_canh", "")
-        }
-
     def createReferenceImage(self):
         """Gửi request POST tới webhook để tạo ảnh tham chiếu."""
         api_url_gpm = self.le_api_url_gpm.text().strip()
@@ -2266,14 +2226,11 @@ cropped body, cut off feet, cut off hands, missing limbs, extra limbs, extra fin
             "so_canh": self.cb_scene_count.currentText()
         }
 
-        if not link_youtube and mo_ta_them:
-            print("[Ảnh Tham Chiếu] Không có link YouTube, dùng trực tiếp phần mô tả thêm để tạo prompt ảnh tham chiếu.")
-            self.ref_image_signal.emit(True, self._build_local_reference_prompt_payload(payload, mo_ta_them))
-            return
-
         webhook_payload = dict(payload)
         if link_youtube and not mo_ta_them:
             webhook_payload["mo_ta_them"] = "Không có mô tả thêm. Hãy phân tích nội dung từ link YouTube."
+        elif mo_ta_them and not link_youtube:
+            webhook_payload["link_youtube"] = ""
 
         def worker(data):
             try:
@@ -2298,15 +2255,6 @@ cropped body, cut off feet, cut off hands, missing limbs, extra limbs, extra fin
                 try:
                     res_json = response.json()
                 except Exception as e:
-                    fallback_source = (data.get("mo_ta_them") or "").strip()
-                    if fallback_source and fallback_source != "Không có mô tả thêm. Hãy phân tích nội dung từ link YouTube.":
-                        print("[Ảnh Tham Chiếu] Webhook trả JSON lỗi, dùng mô tả thêm để tạo prompt ảnh tham chiếu.")
-                        self.ref_image_signal.emit(True, self._build_local_reference_prompt_payload(data, fallback_source))
-                        return
-                    if (data.get("link_youtube") or "").strip():
-                        print("[Ảnh Tham Chiếu] Webhook trả JSON lỗi, dùng link YouTube làm nguồn mô tả dự phòng.")
-                        self.ref_image_signal.emit(True, self._build_local_reference_prompt_payload(data, data.get("link_youtube", "")))
-                        return
                     self.ref_image_signal.emit(False, f"Lỗi parse JSON: {str(e)}\n\nResponse:\n{response.text[:200]}")
                     return
                     
@@ -2331,15 +2279,7 @@ cropped body, cut off feet, cut off hands, missing limbs, extra limbs, extra fin
                     }
                     self.ref_image_signal.emit(True, result_payload)
                 else:
-                    fallback_source = (data.get("mo_ta_them") or "").strip()
-                    if fallback_source == "Không có mô tả thêm. Hãy phân tích nội dung từ link YouTube.":
-                        fallback_source = ""
-                    fallback_source = fallback_source or (data.get("link_youtube") or "").strip()
-                    if fallback_source:
-                        print("[Ảnh Tham Chiếu] API không có prompt ảnh tham chiếu, dùng dữ liệu nhập làm prompt dự phòng.")
-                        self.ref_image_signal.emit(True, self._build_local_reference_prompt_payload(data, fallback_source))
-                    else:
-                        self.ref_image_signal.emit(False, f"API không có trường 'Prompt ảnh tham chiếu'. Dữ liệu trả về: {str(res_json)[:300]}")
+                    self.ref_image_signal.emit(False, f"API không có trường 'Prompt ảnh tham chiếu'. Dữ liệu trả về: {str(res_json)[:300]}")
             except requests.Timeout:
                 self.ref_image_signal.emit(False, "Timeout: API tạo prompt ảnh tham chiếu không trả kết quả sau 30 phút.")
             except requests.RequestException as e:
