@@ -213,6 +213,240 @@ class MultiThread(QThread):
 
         raise RuntimeError(f"Không thể upload ảnh tham chiếu vào Flow. Chi tiết: {last_error}")
 
+    def _add_reference_image_to_prompt(self, page):
+        """Bước thêm ảnh tham chiếu vào câu lệnh (prompt) sau khi upload xong.
+        
+        Quy trình:
+        1. Click nút 3 chấm (⋮) trên góc phải của ảnh tham chiếu đã upload
+        2. Click 'Thêm vào câu lệnh' từ menu dropdown
+        3. Đợi ảnh tham chiếu xuất hiện trong vùng prompt
+        """
+        self.record.emit(self.index, "Đang thêm ảnh tham chiếu vào câu lệnh", "-")
+        
+        # Bước 1: Tìm và click nút 3 chấm (⋮) trên ảnh tham chiếu
+        # Nút 3 chấm nằm ở góc trên bên phải của card ảnh, thường là button với icon more/menu
+        three_dot_clicked = False
+        
+        # Danh sách selector cho nút 3 chấm trên card ảnh
+        three_dot_selectors = [
+            # Nút 3 chấm thường nằm trong card/container ảnh, bên cạnh nút heart/like
+            'button[aria-label*="Thêm"]',
+            'button[aria-label*="thêm"]',
+            'button[aria-label*="More"]',
+            'button[aria-label*="more"]',
+            'button[aria-label*="Menu"]',
+            'button[aria-label*="menu"]',
+            'button[aria-label*="Tuỳ chọn"]',
+            'button[aria-label*="tuỳ chọn"]',
+            'button[aria-label*="Option"]',
+            'button[aria-label*="option"]',
+            'button[aria-label*="Khác"]',
+            'button[aria-label*="khác"]',
+        ]
+        
+        for selector in three_dot_selectors:
+            if three_dot_clicked:
+                break
+            try:
+                btns = page.locator(selector)
+                count = btns.count()
+                for i in range(count):
+                    try:
+                        btn = btns.nth(i)
+                        if btn.is_visible(timeout=1000):
+                            btn.click(timeout=3000)
+                            page.wait_for_timeout(800)
+                            # Kiểm tra xem menu dropdown đã hiện chưa
+                            menu_visible = False
+                            try:
+                                menu_visible = page.locator('text="Thêm vào câu lệnh"').first.is_visible(timeout=1500)
+                            except:
+                                pass
+                            if not menu_visible:
+                                try:
+                                    menu_visible = page.locator('text="Add to prompt"').first.is_visible(timeout=500)
+                                except:
+                                    pass
+                            if menu_visible:
+                                three_dot_clicked = True
+                                print(f"[Cảnh {self.index}] Đã click nút 3 chấm bằng selector: {selector} (index {i})")
+                                break
+                            else:
+                                # Đóng menu nếu mở sai
+                                page.keyboard.press("Escape")
+                                page.wait_for_timeout(300)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        
+        # Fallback: Nếu chưa tìm được bằng aria-label, thử tìm bằng icon SVG hoặc CSS class
+        if not three_dot_clicked:
+            try:
+                # Tìm tất cả nút button nhỏ trong vùng gallery/content area (không phải toolbar chính)
+                # Nút 3 chấm thường nằm cạnh nút heart (yêu thích)
+                heart_buttons = page.locator('button[aria-label*="thích"], button[aria-label*="Thích"], button[aria-label*="heart"], button[aria-label*="favorite"], button[aria-label*="Yêu"]')
+                heart_count = heart_buttons.count()
+                
+                if heart_count > 0:
+                    # Nút 3 chấm thường nằm ngay bên phải nút heart, cùng parent container
+                    for hi in range(heart_count):
+                        try:
+                            heart_btn = heart_buttons.nth(hi)
+                            if not heart_btn.is_visible(timeout=500):
+                                continue
+                            # Tìm nút anh em (sibling) ngay bên cạnh nút heart
+                            parent = heart_btn.locator('..')
+                            sibling_btns = parent.locator('button')
+                            sib_count = sibling_btns.count()
+                            for si in range(sib_count):
+                                sib = sibling_btns.nth(si)
+                                # Bỏ qua nút heart
+                                try:
+                                    sib_label = sib.get_attribute('aria-label', timeout=500) or ''
+                                except:
+                                    sib_label = ''
+                                if any(kw in sib_label.lower() for kw in ['thích', 'heart', 'favorite', 'yêu']):
+                                    continue
+                                if sib.is_visible(timeout=500):
+                                    sib.click(timeout=3000)
+                                    page.wait_for_timeout(800)
+                                    menu_visible = False
+                                    try:
+                                        menu_visible = page.locator('text="Thêm vào câu lệnh"').first.is_visible(timeout=1500)
+                                    except:
+                                        pass
+                                    if not menu_visible:
+                                        try:
+                                            menu_visible = page.locator('text="Add to prompt"').first.is_visible(timeout=500)
+                                        except:
+                                            pass
+                                    if menu_visible:
+                                        three_dot_clicked = True
+                                        print(f"[Cảnh {self.index}] Đã click nút 3 chấm (sibling của heart button)")
+                                        break
+                                    else:
+                                        page.keyboard.press("Escape")
+                                        page.wait_for_timeout(300)
+                            if three_dot_clicked:
+                                break
+                        except Exception:
+                            pass
+            except Exception as e:
+                print(f"[Cảnh {self.index}] Lỗi tìm nút 3 chấm bằng fallback heart-sibling: {e}")
+        
+        # Fallback cuối: hover lên ảnh rồi tìm nút 3 chấm xuất hiện
+        if not three_dot_clicked:
+            try:
+                # Tìm card ảnh đầu tiên trong gallery
+                image_cards = page.locator('[data-type="card"], [class*="card"], [class*="asset"], [class*="gallery"] > div')
+                card_count = image_cards.count()
+                for ci in range(card_count):
+                    card = image_cards.nth(ci)
+                    if not card.is_visible(timeout=500):
+                        continue
+                    card.hover(timeout=3000)
+                    page.wait_for_timeout(800)
+                    # Sau khi hover, tìm nút 3 chấm bên trong card
+                    card_buttons = card.locator('button')
+                    cb_count = card_buttons.count()
+                    for bi in range(cb_count):
+                        cb = card_buttons.nth(bi)
+                        if cb.is_visible(timeout=500):
+                            cb.click(timeout=3000)
+                            page.wait_for_timeout(800)
+                            menu_visible = False
+                            try:
+                                menu_visible = page.locator('text="Thêm vào câu lệnh"').first.is_visible(timeout=1500)
+                            except:
+                                pass
+                            if not menu_visible:
+                                try:
+                                    menu_visible = page.locator('text="Add to prompt"').first.is_visible(timeout=500)
+                                except:
+                                    pass
+                            if menu_visible:
+                                three_dot_clicked = True
+                                print(f"[Cảnh {self.index}] Đã click nút 3 chấm (hover card fallback)")
+                                break
+                            else:
+                                page.keyboard.press("Escape")
+                                page.wait_for_timeout(300)
+                    if three_dot_clicked:
+                        break
+            except Exception as e:
+                print(f"[Cảnh {self.index}] Lỗi tìm nút 3 chấm bằng hover card fallback: {e}")
+        
+        if not three_dot_clicked:
+            raise RuntimeError("Không thể tìm và click nút 3 chấm (⋮) trên ảnh tham chiếu. Hãy kiểm tra giao diện Flow.")
+        
+        # Bước 2: Click "Thêm vào câu lệnh" từ menu dropdown
+        add_to_prompt_clicked = False
+        add_to_prompt_selectors = [
+            'text="Thêm vào câu lệnh"',
+            'text="Add to prompt"',
+            '[role="menuitem"]:has-text("Thêm vào câu lệnh")',
+            '[role="menuitem"]:has-text("Add to prompt")',
+            'button:has-text("Thêm vào câu lệnh")',
+            'button:has-text("Add to prompt")',
+            'li:has-text("Thêm vào câu lệnh")',
+            'li:has-text("Add to prompt")',
+            'div[role="menu"] >> text="Thêm vào câu lệnh"',
+        ]
+        
+        for selector in add_to_prompt_selectors:
+            try:
+                el = page.locator(selector).first
+                if el.is_visible(timeout=1500):
+                    el.click(timeout=3000)
+                    add_to_prompt_clicked = True
+                    print(f"[Cảnh {self.index}] Đã click 'Thêm vào câu lệnh' bằng selector: {selector}")
+                    break
+            except Exception:
+                pass
+        
+        if not add_to_prompt_clicked:
+            raise RuntimeError("Không thể click 'Thêm vào câu lệnh' từ menu. Hãy kiểm tra giao diện Flow.")
+        
+        # Bước 3: Đợi ảnh tham chiếu xuất hiện trong vùng prompt (thumbnail nhỏ bên cạnh ô nhập)
+        print(f"[Cảnh {self.index}] Đang đợi ảnh tham chiếu load vào câu lệnh...")
+        page.wait_for_timeout(2000)
+        
+        # Kiểm tra xem ảnh đã xuất hiện trong prompt area chưa
+        image_in_prompt = False
+        for check in range(15):  # Tối đa 15 giây
+            self._check_stop()
+            try:
+                # Tìm thumbnail ảnh trong vùng prompt input
+                # Thường là một img hoặc div với background-image gần ô nhập
+                prompt_area = page.locator('textarea:visible, div[contenteditable="true"]:visible, [class*="prompt"]:visible').last
+                if prompt_area.is_visible(timeout=500):
+                    # Kiểm tra có ảnh thumbnail trong parent container
+                    parent_area = prompt_area.locator('..').locator('..')
+                    imgs_in_prompt = parent_area.locator('img')
+                    if imgs_in_prompt.count() > 0:
+                        image_in_prompt = True
+                        break
+            except Exception:
+                pass
+            
+            try:
+                # Fallback: tìm nút X (close) gần ô prompt → có nghĩa là đã có attachment
+                close_btns = page.locator('[class*="prompt"] button[aria-label*="close" i], [class*="prompt"] button[aria-label*="Remove" i], [class*="prompt"] button[aria-label*="xóa" i], [class*="prompt"] button[aria-label*="Xóa" i]')
+                if close_btns.count() > 0:
+                    image_in_prompt = True
+                    break
+            except Exception:
+                pass
+            
+            page.wait_for_timeout(1000)
+        
+        if image_in_prompt:
+            print(f"[Cảnh {self.index}] ✅ Ảnh tham chiếu đã được thêm vào câu lệnh thành công.")
+        else:
+            # Vẫn tiếp tục dù không confirm được, vì có thể UI structure khác
+            print(f"[Cảnh {self.index}] ⚠️ Không xác nhận được ảnh đã vào prompt, nhưng vẫn tiếp tục.")
+
     def run(self):
         gpm = Gpm()
         profile_id = self.profile_id
@@ -435,6 +669,9 @@ class MultiThread(QThread):
                     raise RuntimeError("Chưa có hình tham chiếu. Vui lòng tạo ảnh tham chiếu trước khi tạo video từng cảnh.")
 
                 self._upload_reference_image_to_flow(page, self.reference_image_path)
+
+                # Bước 4.1: Click nút 3 chấm trên ảnh tham chiếu → "Thêm vào câu lệnh" để add ảnh vào prompt
+                self._add_reference_image_to_prompt(page)
 
                 try:
                     search_input = page.get_by_placeholder(re.compile(r"tạo gì|create", re.IGNORECASE)).first
@@ -1438,6 +1675,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.dot_count = 0
         self.is_prompt_running = False
         self.is_concat_running = False
+        self.is_ref_api_running = False
+        self.ref_api_tick = 0
         self.prompt_scene_count = 0
 
         # Kết nối sự kiện Click cho nút "BẮT ĐẦU TẠO VIDEO" bên tab Veo3 và Kie AI
@@ -1475,19 +1714,57 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.dot_count = (self.dot_count + 1) % 4
         dots = "." * self.dot_count
         
-        if self.is_prompt_running:
+        # 1. Trạng thái tạo ảnh tham chiếu nhân vật (API tạo prompt)
+        if getattr(self, "is_ref_api_running", False):
+            self.ref_api_tick = getattr(self, "ref_api_tick", 0) + 1
+            dots_count = 3 - (self.ref_api_tick % 3)
+            ref_dots = "." * dots_count
+            text = f"⏳ Đang tạo prompt{ref_dots}"
+            
+            # Gradient đổi màu sắc linh hoạt (Hồng/Cam -> Tím/Lam -> Cyan/Teal) lặp đi lặp lại
+            styles = [
+                ("background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #db2777, stop:1 #ea580c);"
+                 "border: 1px solid #db2777; color: white; font-weight: bold; border-radius: 6px;"),
+                ("background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7c3aed, stop:1 #c084fc);"
+                 "border: 1px solid #7c3aed; color: white; font-weight: bold; border-radius: 6px;"),
+                ("background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #0891b2, stop:1 #0284c7);"
+                 "border: 1px solid #0891b2; color: white; font-weight: bold; border-radius: 6px;")
+            ]
+            current_style = styles[self.ref_api_tick % len(styles)]
+            
+            if hasattr(self, 'veo3_btn_running'):
+                self.veo3_btn_running.setText(text)
+                self.veo3_btn_running.setStyleSheet(current_style)
+            if hasattr(self, 'kie_btn_running'):
+                self.kie_btn_running.setText(text)
+                self.kie_btn_running.setStyleSheet(current_style)
+            if hasattr(self, 'kol_btn_running'):
+                self.kol_btn_running.setText(text)
+                self.kol_btn_running.setStyleSheet(current_style)
+
+        # 2. Trạng thái phân tích tạo Prompt cho video
+        elif self.is_prompt_running:
             text = f"⏱ Đang xử lý {self.prompt_scene_count} cảnh{dots}"
-            self.veo3_btn_running.setText(text)
-            self.kie_btn_running.setText(text)
+            if hasattr(self, 'veo3_btn_running'):
+                self.veo3_btn_running.setText(text)
+            if hasattr(self, 'kie_btn_running'):
+                self.kie_btn_running.setText(text)
+
+        # 3. Trạng thái các luồng tạo video đang chạy thực tế
         elif self.running_threads > 0:
             text = f"⏱ Đang xử lý {self.running_threads} cảnh{dots}"
-            self.veo3_btn_running.setText(text)
-            self.kie_btn_running.setText(text)
+            if hasattr(self, 'veo3_btn_running'):
+                self.veo3_btn_running.setText(text)
+            if hasattr(self, 'kie_btn_running'):
+                self.kie_btn_running.setText(text)
 
+        # 4. Trạng thái ghép video
         if getattr(self, "is_concat_running", False):
             text = f"⏳ Đang ghép video vui lòng chờ{dots}"
-            self.veo3_btn_concat.setText(text)
-            self.kie_btn_concat.setText(text)
+            if hasattr(self, 'veo3_btn_concat'):
+                self.veo3_btn_concat.setText(text)
+            if hasattr(self, 'kie_btn_concat'):
+                self.kie_btn_concat.setText(text)
 
     def _start_btn_running_animation(self):
         if not self.loading_timer.isActive():
@@ -1498,16 +1775,55 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 "border: 1px solid #d97706;"
                 "color: white; font-weight: bold; border-radius: 6px;"
             )
-            self.veo3_btn_running.setStyleSheet(style)
-            self.kie_btn_running.setStyleSheet(style)
+            if hasattr(self, 'veo3_btn_running'):
+                self.veo3_btn_running.setStyleSheet(style)
+            if hasattr(self, 'kie_btn_running'):
+                self.kie_btn_running.setStyleSheet(style)
 
     def _stop_btn_running_animation(self):
+        if not self.is_prompt_running and self.running_threads == 0 and not getattr(self, "is_concat_running", False) and not getattr(self, "is_ref_api_running", False):
+            self.loading_timer.stop()
+            if hasattr(self, 'veo3_btn_running'):
+                self.veo3_btn_running.setStyleSheet("")
+                self.veo3_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+            if hasattr(self, 'kie_btn_running'):
+                self.kie_btn_running.setStyleSheet("")
+                self.kie_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+
+    def _start_ref_api_animation(self):
+        self.is_ref_api_running = True
+        self.ref_api_tick = 0
+        if not self.loading_timer.isActive():
+            self.dot_count = 0
+            self.loading_timer.start(500)
+
+    def _stop_ref_api_animation(self):
+        self.is_ref_api_running = False
         if not self.is_prompt_running and self.running_threads == 0 and not getattr(self, "is_concat_running", False):
             self.loading_timer.stop()
-            self.veo3_btn_running.setStyleSheet("")
-            self.kie_btn_running.setStyleSheet("")
-            self.veo3_btn_running.setText("⏱ Đang xử lý 0 cảnh")
-            self.kie_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+            if hasattr(self, 'veo3_btn_running'):
+                self.veo3_btn_running.setStyleSheet("")
+                self.veo3_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+            if hasattr(self, 'kie_btn_running'):
+                self.kie_btn_running.setStyleSheet("")
+                self.kie_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+            if hasattr(self, 'kol_btn_running'):
+                self.kol_btn_running.setStyleSheet("")
+                self.kol_btn_running.setText("⏱ Đang xử lý 0 cảnh")
+        else:
+            # Khôi phục màu/text của tiến trình tạo video nếu đang chạy song song
+            if self.is_prompt_running or self.running_threads > 0:
+                style = (
+                    "background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #d97706, stop:1 #b45309);"
+                    "border: 1px solid #d97706;"
+                    "color: white; font-weight: bold; border-radius: 6px;"
+                )
+                if hasattr(self, 'veo3_btn_running'):
+                    self.veo3_btn_running.setStyleSheet(style)
+                if hasattr(self, 'kie_btn_running'):
+                    self.kie_btn_running.setStyleSheet(style)
+                if hasattr(self, 'kol_btn_running'):
+                    self.kol_btn_running.setStyleSheet(style)
 
     def _start_concat_animation(self):
         self.is_concat_running = True
@@ -1520,15 +1836,19 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "border: 1px solid #d97706;"
             "color: white; font-weight: bold; border-radius: 6px;"
         )
-        self.veo3_btn_concat.setStyleSheet(style)
-        self.kie_btn_concat.setStyleSheet(style)
+        if hasattr(self, 'veo3_btn_concat'):
+            self.veo3_btn_concat.setStyleSheet(style)
+        if hasattr(self, 'kie_btn_concat'):
+            self.kie_btn_concat.setStyleSheet(style)
 
     def _stop_concat_animation(self):
         self.is_concat_running = False
-        if not self.is_prompt_running and self.running_threads == 0:
+        if not self.is_prompt_running and self.running_threads == 0 and not getattr(self, "is_ref_api_running", False):
             self.loading_timer.stop()
-        self.veo3_btn_concat.setStyleSheet("")
-        self.kie_btn_concat.setStyleSheet("")
+        if hasattr(self, 'veo3_btn_concat'):
+            self.veo3_btn_concat.setStyleSheet("")
+        if hasattr(self, 'kie_btn_concat'):
+            self.kie_btn_concat.setStyleSheet("")
 
     def _set_veo3_btn_running(self, is_running):
         """Đổi trạng thái nút BẮT ĐẦU TẠO VIDEO theo trạng thái luồng."""
@@ -2213,6 +2533,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         if hasattr(self, 'veo3_btn_create_ref'):
             self.veo3_btn_create_ref.setText("⏳ Đang xử lý...")
             self.veo3_btn_create_ref.setEnabled(False)
+        self._start_ref_api_animation()
 
         # Thu thập 8 thông tin từ giao diện (bắt buộc gọi từ main thread)
         payload = {
@@ -2258,11 +2579,32 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                     self.ref_image_signal.emit(False, f"Lỗi parse JSON: {str(e)}\n\nResponse:\n{response.text[:200]}")
                     return
                     
-                res_dict = {}
-                if isinstance(res_json, list) and len(res_json) > 0 and isinstance(res_json[0], dict):
-                    res_dict = res_json[0]
-                elif isinstance(res_json, dict):
-                    res_dict = res_json
+                # Debug: log cấu trúc response để tiện theo dõi
+                print(f"[Ảnh Tham Chiếu] Kiểu dữ liệu API trả về: {type(res_json).__name__}")
+                if isinstance(res_json, list):
+                    print(f"[Ảnh Tham Chiếu] Độ dài list: {len(res_json)}, kiểu phần tử đầu: {type(res_json[0]).__name__ if res_json else 'N/A'}")
+                
+                # Hàm đệ quy để tìm dict chứa "Prompt ảnh tham chiếu" trong cấu trúc lồng nhau
+                def _find_ref_dict(data):
+                    """Tìm dict chứa key 'Prompt ảnh tham chiếu' trong cấu trúc JSON lồng nhau."""
+                    if isinstance(data, dict):
+                        if "Prompt ảnh tham chiếu" in data:
+                            return data
+                        # Tìm trong các giá trị con của dict
+                        for v in data.values():
+                            result = _find_ref_dict(v)
+                            if result:
+                                return result
+                    elif isinstance(data, list):
+                        for item in data:
+                            result = _find_ref_dict(item)
+                            if result:
+                                return result
+                    return None
+                
+                res_dict = _find_ref_dict(res_json) or {}
+                if not res_dict:
+                    print(f"[Ảnh Tham Chiếu] ⚠️ Không tìm thấy dict chứa 'Prompt ảnh tham chiếu'. Dữ liệu gốc: {str(res_json)[:500]}")
                     
                 prompt_text = res_dict.get("Prompt ảnh tham chiếu", "")
                 
@@ -2293,6 +2635,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         t.start()
 
     def _on_ref_image_result(self, success, result_text):
+        self._stop_ref_api_animation()
         def _reset_btn():
             if hasattr(self, 'veo3_btn_create_ref'):
                 self.veo3_btn_create_ref.setText("🖼 Bấm để tạo hình tham chiếu nhân vật")
