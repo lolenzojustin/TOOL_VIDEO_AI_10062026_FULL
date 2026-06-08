@@ -262,9 +262,9 @@ class Ui_Widget(object):
         self._build_kol_tab(self.tab_kol)                    # ẩn — giữ widget cho config
         self._build_kie_ai_tab(self.tab_kie_ai)
 
-        # Chỉ thêm 2 tab cần thiết: Veo3 (index 0) và Kie AI (index 1)
+        # Chỉ thêm 2 tab cần thiết: Veo3 (index 0) và KOL AI (index 1)
         self.tabWidget.addTab(self.tab_veo3,      "  Chế độ Veo3 tạo video  ")
-        self.tabWidget.addTab(self.tab_kie_ai,    "  🤖 Chế độ tạo video với Kie AI  ")
+        self.tabWidget.addTab(self.tab_kie_ai,    "  🤖 Chế độ tạo video với KOL AI  ")
         self.tabWidget.setCurrentIndex(0)
 
         rv.addWidget(self.tabWidget)
@@ -636,9 +636,36 @@ class Ui_Widget(object):
         scene_scroll.setWidget(scene_box)
         layout.addWidget(scene_scroll, 1)
 
-    # ─── KIE AI TAB ───
+    def _image_path_row(self, label_text, placeholder, attr_line, attr_button):
+        sc = self._sc
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(_s(8, sc))
+
+        label = QtWidgets.QLabel(label_text)
+        label.setObjectName("imageInputLabel")
+        label.setFixedWidth(_s(230, sc))
+
+        line = QtWidgets.QLineEdit()
+        line.setPlaceholderText(placeholder)
+        line.setObjectName("bigInput")
+        line.setFixedHeight(_s(42, sc))
+
+        button = QtWidgets.QPushButton("🖼 Chọn ảnh")
+        button.setObjectName("kolUploadBtn")
+        button.setFixedHeight(_s(42, sc))
+        button.setFixedWidth(_s(120, sc))
+        button.setCursor(QtCore.Qt.PointingHandCursor)
+
+        row.addWidget(label)
+        row.addWidget(line, 1)
+        row.addWidget(button)
+        setattr(self, attr_line, line)
+        setattr(self, attr_button, button)
+        return row
+
+    # ─── KOL AI TAB ───
     def _build_kie_ai_tab(self, tab):
-        """Tab Kie AI: giống cấu trúc Veo3 nhưng thêm phần nhập Kie AI API Key."""
+        """Tab KOL AI: giữ cấu trúc tạo video, thay link/API bằng 2 ảnh đầu vào."""
         sc = self._sc
         layout = QtWidgets.QVBoxLayout(tab)
         layout.setContentsMargins(_s(14,sc), _s(10,sc), _s(14,sc), _s(10,sc))
@@ -673,51 +700,31 @@ class Ui_Widget(object):
         self.kie_btn_new = kie_new_btn
         self.kie_btn_running = kie_btn_running
 
-        # ── Kie AI API Key Panel (phần đặc trưng của tab này) ──
-        kieApiPanel = QtWidgets.QFrame()
-        kieApiPanel.setObjectName("kieApiPanel")
-        kieApiLay = QtWidgets.QHBoxLayout(kieApiPanel)
-        kieApiLay.setContentsMargins(_s(10,sc), _s(8,sc), _s(10,sc), _s(8,sc))
-        kieApiLay.setSpacing(_s(10,sc))
+        # Widget ẩn để các đoạn code cũ còn tham chiếu không bị lỗi, không hiển thị trên tab KOL.
+        self.kie_le_api_key = QtWidgets.QLineEdit(tab)
+        self.kie_le_api_key.setVisible(False)
+        self.kie_le_link = QtWidgets.QLineEdit(tab)
+        self.kie_le_link.setVisible(False)
+        self.kie_btn_save_api = QtWidgets.QPushButton(tab)
+        self.kie_btn_save_api.setVisible(False)
 
-        kieApiIcon = QtWidgets.QLabel("🔑")
-        kieApiIcon.setStyleSheet(f"font-size: {_s(22,sc)}px; background: transparent; border: none;")
-        kieApiIcon.setFixedWidth(_s(30, sc))
+        layout.addLayout(self._image_path_row(
+            "Hình tham chiếu đa chiều của KOL",
+            "Chọn file ảnh tham chiếu đa chiều của KOL...",
+            "kie_le_kol_ref_image",
+            "kie_btn_choose_kol_ref_image"
+        ))
 
-        kieApiLabel = QtWidgets.QLabel("Kie AI API Key:")
-        kieApiLabel.setObjectName("kieApiLabel")
-        kieApiLabel.setFixedWidth(_s(120, sc))
-
-        kie_api_key_input = QtWidgets.QLineEdit()
-        kie_api_key_input.setPlaceholderText("Nhập Kie AI API Key của bạn tại đây...")
-        kie_api_key_input.setObjectName("kieApiKeyInput")
-        kie_api_key_input.setFixedHeight(_s(40, sc))
-        kie_api_key_input.setEchoMode(QtWidgets.QLineEdit.Password)
-        self.kie_le_api_key = kie_api_key_input
-
-        kie_api_save_btn = QtWidgets.QPushButton("💾 Lưu")
-        kie_api_save_btn.setObjectName("saveBtn")
-        kie_api_save_btn.setFixedSize(_s(70, sc), _s(38, sc))
-        kie_api_save_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.kie_btn_save_api = kie_api_save_btn
-
-        kieApiLay.addWidget(kieApiIcon)
-        kieApiLay.addWidget(kieApiLabel)
-        kieApiLay.addWidget(kie_api_key_input, 1)
-        kieApiLay.addWidget(kie_api_save_btn)
-        layout.addWidget(kieApiPanel)
-
-        # Link input (giống Veo3)
-        kie_le_link = QtWidgets.QLineEdit()
-        kie_le_link.setPlaceholderText("https://www.youtube.com/shorts/bQic0POmBHA")
-        kie_le_link.setObjectName("bigInput")
-        kie_le_link.setFixedHeight(_s(42, sc))
-        layout.addWidget(kie_le_link)
-        self.kie_le_link = kie_le_link
+        layout.addLayout(self._image_path_row(
+            "Hình ảnh sản phẩm",
+            "Chọn file hình ảnh sản phẩm...",
+            "kie_le_product_image",
+            "kie_btn_choose_product_image"
+        ))
 
         # Desc input (giống Veo3)
         kie_le_desc = QtWidgets.QLineEdit()
-        kie_le_desc.setPlaceholderText("Mô tả thêm (tùy chọn)...")
+        kie_le_desc.setPlaceholderText("Mô tả thêm về KOL AI")
         kie_le_desc.setObjectName("bigInput")
         kie_le_desc.setFixedHeight(_s(42, sc))
         layout.addWidget(kie_le_desc)
@@ -745,37 +752,6 @@ class Ui_Widget(object):
             btnRow.addWidget(b, 1)
             setattr(self, attr, b)
         layout.addLayout(btnRow)
-
-        # Reference image box (giống Veo3)
-        refBox = QtWidgets.QFrame()
-        refBox.setObjectName("refBox")
-        refBox.setFixedHeight(_s(95, sc))
-        refLayout = QtWidgets.QHBoxLayout(refBox)
-        refLayout.setContentsMargins(_s(10,sc), _s(6,sc), _s(10,sc), _s(6,sc))
-        refLayout.setSpacing(_s(12,sc))
-
-        ref_img_lb = QtWidgets.QLabel("ẢNH THAM CHIẾU")
-        ref_img_lb.setObjectName("refImgBox")
-        ref_img_lb.setAlignment(QtCore.Qt.AlignCenter)
-        ref_img_lb.setFixedWidth(_s(200, sc))
-
-        kie_btn_create_ref = QtWidgets.QPushButton("🖼 Bấm để tạo hình tham chiếu nhân vật")
-        kie_btn_create_ref.setObjectName("btnCreateRef")
-        kie_btn_create_ref.setCursor(QtCore.Qt.PointingHandCursor)
-        self.kie_btn_create_ref = kie_btn_create_ref
-
-        ref_txt = QtWidgets.QLabel(
-            "Nên tạo ảnh tham chiếu nhân vật trước khi bấm 'Bắt đầu phân tích tạo prompt' để các nhân vật trong tất cả cảnh được đồng nhất"
-        )
-        ref_txt.setObjectName("refNoteText")
-        ref_txt.setWordWrap(True)
-
-        refLayout.addWidget(ref_img_lb)
-        refLayout.addWidget(kie_btn_create_ref)
-        refLayout.addWidget(ref_txt, 1)
-        layout.addWidget(refBox)
-        self.kie_ref_img = ref_img_lb
-        self.kie_ref_txt = ref_txt
 
         # Scene scroll (giống Veo3)
         scene_scroll = QtWidgets.QScrollArea()
@@ -1221,6 +1197,10 @@ class Ui_Widget(object):
             color: #38bdf8; font-size: {fs}px; font-weight: bold;
             background: transparent; border: none;
         }}
+        #imageInputLabel {{
+            color: #38bdf8; font-size: {fs}px; font-weight: bold;
+            background: transparent; border: none;
+        }}
         #kieApiKeyInput {{
             background: #111827; border: 1px solid #0ea5e9;
             border-radius: {_s(6,sc)}px; color: #e5e7eb;
@@ -1249,7 +1229,7 @@ class Ui_Widget(object):
         self.centralwidget.parent().setStyleSheet(qss)
 
     def retranslateUi(self, Widget):
-        Widget.setWindowTitle("🎬 AI Video Tool - Veo3 / Kie AI")
+        Widget.setWindowTitle("🎬 AI Video Tool - Veo3 / KOL AI")
 
 # test 1
 # if __name__ == "__main__":

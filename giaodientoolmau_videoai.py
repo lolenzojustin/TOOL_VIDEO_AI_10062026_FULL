@@ -4,6 +4,7 @@ import os
 import time
 import threading
 import base64
+import json
 import requests
 
 # Thoi gian cho toi da khi goi API tao anh tham chieu. API tra nhanh hon thi chay tiep ngay.
@@ -14,6 +15,9 @@ REFERENCE_IMAGE_API_RETRY_STATUS_CODES = {502, 503, 504}
 REFERENCE_IMAGE_GENERATION_MAX_TIMEOUT = 10 * 60
 REFERENCE_IMAGE_GENERATION_START_TIMEOUT = 120
 REFERENCE_IMAGE_PROMPT_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/webhook_get_data_tool"
+KIE_AI_REF_IMAGE_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/Webhook_get_data_tool_kie"
+KIE_AI_REF_IMAGE_IGNORED_STATUS_CODES = {502, 503, 504}
+KIE_AI_REF_IMAGE_MAX_WAIT_SECONDS = 20 * 60
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -1645,13 +1649,13 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "FLOW_ASPECT_RATIO": self.cb_flow_aspect_ratio,
             "FLOW_GEN_COUNT": self.cb_flow_gen_count,
             "FLOW_AI_MODEL": self.cb_flow_ai_model,
+            "KOL_AI_LANG": self.kie_cb_lang,
+            "KOL_AI_REF_IMAGE": self.kie_le_kol_ref_image,
+            "KOL_AI_PRODUCT_IMAGE": self.kie_le_product_image,
+            "KOL_AI_DESC": self.kie_le_desc,
         }
 
         self._load_config()
-        self._config_map["KIE_AI_API_KEY"] = self.kie_le_api_key
-        self._config_map["KIE_LANG"] = self.kie_cb_lang
-        self._config_map["KIE_LINK"] = self.kie_le_link
-        self._config_map["KIE_DESC"] = self.kie_le_desc
         self.scene_prompt_boxes = self.tab_veo3.findChildren(QtWidgets.QTextEdit, "promptBox")
         self.scene_preview_containers = self.tab_veo3.findChildren(QtWidgets.QStackedWidget, "previewContainer")
         self._active_run_prompt_boxes = self.scene_prompt_boxes
@@ -1708,6 +1712,15 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         if hasattr(self, 'kie_btn_create_ref'):
             self.kie_btn_create_ref.clicked.connect(self.createReferenceImageKieAi)
             self.kie_ref_image_api_signal.connect(self._on_kie_ref_image_api_result)
+
+        if hasattr(self, 'kie_btn_choose_kol_ref_image'):
+            self.kie_btn_choose_kol_ref_image.clicked.connect(
+                lambda: self._choose_image_file(self.kie_le_kol_ref_image)
+            )
+        if hasattr(self, 'kie_btn_choose_product_image'):
+            self.kie_btn_choose_product_image.clicked.connect(
+                lambda: self._choose_image_file(self.kie_le_product_image)
+            )
 
         # Kết nối nút "Mở thư mục xuất này" → mở folder chứa video/ảnh
         if hasattr(self, 'btn_open_folder'):
@@ -1942,10 +1955,12 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self._animate_loading_button()
         QtWidgets.QApplication.processEvents()
 
-        # Thu thập 9 thông tin từ UI
+        is_kol_tab = self.tabWidget.currentIndex() == 1
+
+        # Thu thập thông tin từ UI; tab KOL dùng 2 ảnh thay cho link YouTube.
         payload = {
-            "link_youtube": self.veo3_le_link.text().strip() if hasattr(self, 'veo3_le_link') else "",
-            "mo_ta_them": self.veo3_le_desc.text().strip() if hasattr(self, 'veo3_le_desc') else "",
+            "link_youtube": "" if is_kol_tab else (self.veo3_le_link.text().strip() if hasattr(self, 'veo3_le_link') else ""),
+            "mo_ta_them": self.kie_le_desc.text().strip() if is_kol_tab else (self.veo3_le_desc.text().strip() if hasattr(self, 'veo3_le_desc') else ""),
             "mo_hinh_sinh_kich_ban": self.cb_ai_model.currentText(),
             "asynclab_api_key": self.le_api_key.text().strip(),
             "phong_cach": self.cb_style.currentText(),
@@ -1954,6 +1969,11 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "giong_nhan_vat": self.te_voice_desc.toPlainText().strip(),
             "so_canh": input_soluong
         }
+        if is_kol_tab:
+            payload.update({
+                "hinh_tham_chieu_da_chieu_kol": self.kie_le_kol_ref_image.text().strip() if hasattr(self, "kie_le_kol_ref_image") else "",
+                "hinh_anh_san_pham": self.kie_le_product_image.text().strip() if hasattr(self, "kie_le_product_image") else "",
+            })
 
         self.prompt_thread = PromptApiThread(payload, api_url)
         self.prompt_thread.result_ready.connect(self._on_prompt_thread_finished)
@@ -2384,6 +2404,21 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             for key, value in env_data.items():
                 f.write(f"{key}={self._encode_env_value(value)}\n")
 
+    def _choose_image_file(self, target_line_edit):
+        """Chọn file ảnh và đưa đường dẫn vào ô nhập tương ứng."""
+        current_path = target_line_edit.text().strip()
+        start_dir = os.path.dirname(current_path) if current_path else ""
+        if not start_dir or not os.path.isdir(start_dir):
+            start_dir = os.path.expanduser("~")
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Chọn hình ảnh",
+            start_dir,
+            "Image files (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*.*)"
+        )
+        if file_path:
+            target_line_edit.setText(file_path)
+
     def _toggle_proxy_panel(self):
         """Thu gọn hoặc mở rộng bảng nhập Profile."""
         is_expanded = self.proxy_expand_panel.isVisible()
@@ -2511,8 +2546,6 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
 
     def createReferenceImageKieAi(self):
         """Gửi request POST 18 thông tin từ giao diện đến webhook Kie AI để tạo hình ảnh tham chiếu nhân vật."""
-        KIE_AI_REF_IMAGE_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/Webhook_get_data_tool_kie"
-
         # Thu thập 18 thông tin từ giao diện
         kie_api_key = self.kie_le_api_key.text().strip() if hasattr(self, 'kie_le_api_key') else ""
         link_youtube = self.kie_le_link.text().strip() if hasattr(self, 'kie_le_link') else ""
@@ -2571,24 +2604,81 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         }
 
         def _kie_ref_worker(data):
+            started_at = time.monotonic()
             try:
-                print(f"[Kie AI Ref] Đang gọi POST đến {KIE_AI_REF_IMAGE_WEBHOOK_URL}")
                 print(f"[Kie AI Ref] Payload: {data}")
-                # Gửi DUY NHẤT 1 lần request, đợi tối đa 5 phút (300 giây)
-                response = requests.post(
+                print(
+                    f"[Kie AI Ref] Gửi duy nhất 1 POST đến {KIE_AI_REF_IMAGE_WEBHOOK_URL}; "
+                    f"chờ tối đa {KIE_AI_REF_IMAGE_MAX_WAIT_SECONDS}s"
+                )
+                with requests.post(
                     KIE_AI_REF_IMAGE_WEBHOOK_URL,
                     json=data,
-                    timeout=300  # 5 phút timeout
-                )
+                    headers={"Accept": "application/json", "Connection": "close"},
+                    timeout=KIE_AI_REF_IMAGE_MAX_WAIT_SECONDS,
+                    stream=True
+                ) as response:
+                    status_code = response.status_code
+                    response_body = ""
 
-                print(f"[Kie AI Ref] ✅ Kết quả HTTP {response.status_code}: {response.text[:500]}")
+                    if status_code not in KIE_AI_REF_IMAGE_IGNORED_STATUS_CODES:
+                        buffer = bytearray()
+                        content_length_text = response.headers.get("Content-Length", "").strip()
+                        expected_length = int(content_length_text) if content_length_text.isdigit() else None
+                        encoding = response.encoding or "utf-8"
 
-                if response.status_code == 200:
-                    self.kie_ref_image_api_signal.emit(True, response.text)
+                        for chunk in response.iter_content(chunk_size=1024):
+                            if not chunk:
+                                continue
+                            buffer.extend(chunk)
+                            response_body = buffer.decode(encoding, errors="replace").strip()
+
+                            # N8n trả JSON; dừng ngay khi body đã là JSON hợp lệ,
+                            # không chờ server đóng kết nối.
+                            try:
+                                parsed_body = json.loads(response_body)
+                                response_body = json.dumps(parsed_body, ensure_ascii=False)
+                                break
+                            except ValueError:
+                                pass
+
+                            if expected_length and len(buffer) >= expected_length:
+                                break
+
+                        if buffer and not response_body:
+                            response_body = buffer.decode(encoding, errors="replace")
+
+                print(f"[Kie AI Ref] ✅ Kết quả HTTP {status_code}: {response_body[:500]}")
+
+                if status_code in KIE_AI_REF_IMAGE_IGNORED_STATUS_CODES:
+                    remaining = max(
+                        0,
+                        KIE_AI_REF_IMAGE_MAX_WAIT_SECONDS - (time.monotonic() - started_at)
+                    )
+                    print(
+                        f"[Kie AI Ref] Bỏ qua HTTP {status_code}; không gửi lại. "
+                        f"Tiếp tục giữ trạng thái chờ thêm {remaining:.0f}s."
+                    )
+                    if remaining:
+                        time.sleep(remaining)
+                    self.kie_ref_image_api_signal.emit(
+                        False,
+                        f"Đã chờ đủ 20 phút sau khi nhận HTTP {status_code} "
+                        "mà không nhận được kết quả cuối cùng từ API KIE AI."
+                    )
+                elif response_body.strip():
+                    # Nhận mọi kết quả có nội dung ngoài các mã nghẽn mạng 502/503/504.
+                    self.kie_ref_image_api_signal.emit(True, response_body)
                 else:
-                    self.kie_ref_image_api_signal.emit(False, f"Lỗi HTTP {response.status_code}: {response.text[:500]}")
+                    self.kie_ref_image_api_signal.emit(
+                        False,
+                        f"API trả HTTP {status_code} nhưng không có nội dung kết quả."
+                    )
             except requests.Timeout:
-                self.kie_ref_image_api_signal.emit(False, "Timeout: API không phản hồi trong 5 phút.")
+                self.kie_ref_image_api_signal.emit(
+                    False,
+                    "Timeout: API KIE AI không phản hồi sau 20 phút."
+                )
             except requests.RequestException as e:
                 self.kie_ref_image_api_signal.emit(False, f"Lỗi kết nối: {str(e)}")
             except Exception as e:

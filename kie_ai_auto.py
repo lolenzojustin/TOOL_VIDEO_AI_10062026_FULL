@@ -65,11 +65,11 @@ class KieAiVideoThread(QThread):
         Luồng chính xử lý tự động tạo video bằng Kie AI.
         
         Quy trình:
-          1. Kiểm tra thông tin đầu vào (profile_id, kie_api_key)
+          1. Kiểm tra thông tin đầu vào (profile_id)
           2. Mở Profile GPM
           3. Kết nối Playwright vào trình duyệt
           4. Truy cập trang Kie AI
-          5. Nhập API Key (nếu cần)
+          5. Chuẩn bị ảnh KOL/sản phẩm
           6. Nhập prompt và gửi tạo video
           7. Chờ kết quả và tải video về
           8. Đóng trình duyệt
@@ -86,9 +86,6 @@ class KieAiVideoThread(QThread):
                 return
             if not profile_id:
                 raise RuntimeError("Chưa có ID Profile cho cảnh này.")
-            if not self.kie_api_key:
-                raise RuntimeError("Chưa nhập Kie AI API Key.")
-
             # ── Bước 2: Mở Profile GPM ──
             if not self.is_running:
                 status = "Đã dừng"
@@ -166,29 +163,24 @@ class KieAiVideoThread(QThread):
 
                 self._check_stop()
 
-                # ── Bước 5: Nhập API Key trên trang Kie AI (nếu cần) ──
-                self.record.emit(self.index, "Đang nhập API Key", "-")
-                # ═══════════════════════════════════════════════════════════
-                # TODO: LOGIC NHẬP API KEY CỦA KIE AI
-                # ═══════════════════════════════════════════════════════════
-                # Ví dụ:
-                # api_key_input = page.locator('input[placeholder*="API"]').first
-                # api_key_input.fill(self.kie_api_key)
-                # page.locator('button:has-text("Submit")').click()
-                print(f"[Kie AI - Cảnh {self.index}] API Key: {self.kie_api_key[:8]}...")
+                # ── Bước 5: Chuẩn bị ảnh KOL/sản phẩm ──
+                self.record.emit(self.index, "Đang chuẩn bị ảnh KOL/sản phẩm", "-")
+                product_image_path = self.flow_settings.get("product_image_path", "")
+                if product_image_path:
+                    print(f"[KOL AI - Cảnh {self.index}] Ảnh sản phẩm: {product_image_path}")
 
                 self._check_stop()
 
-                # ── Bước 6: Upload ảnh tham chiếu (nếu có) ──
+                # ── Bước 6: Upload ảnh KOL (nếu có) ──
                 if self.reference_image_path and os.path.exists(self.reference_image_path):
-                    self.record.emit(self.index, "Đang upload ảnh tham chiếu", "-")
+                    self.record.emit(self.index, "Đang upload ảnh KOL", "-")
                     # ═══════════════════════════════════════════════════════════
                     # TODO: LOGIC UPLOAD ẢNH THAM CHIẾU LÊN KIE AI
                     # ═══════════════════════════════════════════════════════════
                     # Ví dụ:
                     # file_input = page.locator('input[type="file"]').first
                     # file_input.set_input_files(self.reference_image_path)
-                    print(f"[Kie AI - Cảnh {self.index}] Ảnh tham chiếu: {self.reference_image_path}")
+                    print(f"[KOL AI - Cảnh {self.index}] Ảnh KOL: {self.reference_image_path}")
 
                 self._check_stop()
 
@@ -426,11 +418,7 @@ def _startThreadKieAi(self):
         QMessageBox.warning(self, "Lỗi", "Số lượng cảnh tối đa là 10.")
         return
 
-    # Kiểm tra Kie AI API Key
-    kie_api_key = self.kie_le_api_key.text().strip()
-    if not kie_api_key:
-        QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập Kie AI API Key trước khi tạo video.")
-        return
+    kie_api_key = ""
 
     # Lấy API URL GPM
     input_api_url_gpm = self.le_api_url_gpm.text().strip()
@@ -438,14 +426,24 @@ def _startThreadKieAi(self):
         QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập API URL GPM (ví dụ: http://localhost:9495).")
         return
 
-    # Kiểm tra ảnh tham chiếu
-    raw_reference_image_path = str(getattr(self, "reference_image_path", "") or "").strip()
+    # Kiểm tra ảnh đầu vào cho tab KOL AI
+    raw_reference_image_path = self.kie_le_kol_ref_image.text().strip() if hasattr(self, "kie_le_kol_ref_image") else ""
     reference_image_path = os.path.abspath(raw_reference_image_path) if raw_reference_image_path else ""
     if not reference_image_path or not os.path.exists(reference_image_path):
         QMessageBox.warning(
             self,
-            "Thiếu ảnh tham chiếu",
-            "Vui lòng bấm 'Bấm để tạo hình tham chiếu nhân vật' và đợi ảnh hiển thị ở khung ẢNH THAM CHIẾU trước khi tạo video từng cảnh."
+            "Thiếu hình tham chiếu KOL",
+            "Vui lòng chọn file Hình tham chiếu đa chiều của KOL trước khi tạo video."
+        )
+        return
+
+    raw_product_image_path = self.kie_le_product_image.text().strip() if hasattr(self, "kie_le_product_image") else ""
+    product_image_path = os.path.abspath(raw_product_image_path) if raw_product_image_path else ""
+    if not product_image_path or not os.path.exists(product_image_path):
+        QMessageBox.warning(
+            self,
+            "Thiếu hình ảnh sản phẩm",
+            "Vui lòng chọn file Hình ảnh sản phẩm trước khi tạo video."
         )
         return
 
@@ -511,6 +509,8 @@ def _startThreadKieAi(self):
         "aspect_ratio": self.cb_flow_aspect_ratio.currentText(),
         "gen_count": self.cb_flow_gen_count.currentText(),
         "ai_model": self.cb_flow_ai_model.currentText(),
+        "kol_reference_image_path": reference_image_path,
+        "product_image_path": product_image_path,
     }
 
     save_dir = self.le_folder.text().strip() if hasattr(self, 'le_folder') else ""
