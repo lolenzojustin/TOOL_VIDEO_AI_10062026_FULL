@@ -1595,6 +1595,7 @@ class RefImageThread(QThread):
 class Manager(QtWidgets.QMainWindow, Ui_Widget):
     ref_image_signal = pyqtSignal(bool, object)
     ref_image_webhook_signal = pyqtSignal(bool, object)
+    kie_ref_image_api_signal = pyqtSignal(bool, str)
 
     def __init__(self):
         super().__init__()
@@ -1702,6 +1703,11 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             self.veo3_btn_create_ref.clicked.connect(self.createReferenceImage)
             self.ref_image_signal.connect(self._on_ref_image_result)
             self.ref_image_webhook_signal.connect(self._on_ref_image_webhook_result)
+
+        # Kết nối nút tạo ảnh tham chiếu nhân vật trên tab Kie AI
+        if hasattr(self, 'kie_btn_create_ref'):
+            self.kie_btn_create_ref.clicked.connect(self.createReferenceImageKieAi)
+            self.kie_ref_image_api_signal.connect(self._on_kie_ref_image_api_result)
 
         # Kết nối nút "Mở thư mục xuất này" → mở folder chứa video/ảnh
         if hasattr(self, 'btn_open_folder'):
@@ -2502,6 +2508,116 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.concat_thread = ConcatVideoThread(video_files, output_path)
         self.concat_thread.finished.connect(self._on_concat_finished)
         self.concat_thread.start()
+
+    def createReferenceImageKieAi(self):
+        """Gửi request POST 18 thông tin từ giao diện đến webhook Kie AI để tạo hình ảnh tham chiếu nhân vật."""
+        KIE_AI_REF_IMAGE_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/Webhook_get_data_tool_kie"
+
+        # Thu thập 18 thông tin từ giao diện
+        kie_api_key = self.kie_le_api_key.text().strip() if hasattr(self, 'kie_le_api_key') else ""
+        link_youtube = self.kie_le_link.text().strip() if hasattr(self, 'kie_le_link') else ""
+        mo_ta_them = self.kie_le_desc.text().strip() if hasattr(self, 'kie_le_desc') else ""
+        mo_hinh_sinh_kich_ban = self.cb_ai_model.currentText() if hasattr(self, 'cb_ai_model') else ""
+        api_key = self.le_api_key.text().strip() if hasattr(self, 'le_api_key') else ""
+        api_url_trinh_duyet = self.le_api_url_gpm.text().strip() if hasattr(self, 'le_api_url_gpm') else ""
+        kich_thuoc_mo_profile = self.cb_win_size.currentText() if hasattr(self, 'cb_win_size') else ""
+        duong_dan_folder_video = self.le_folder.text().strip() if hasattr(self, 'le_folder') else ""
+        phong_cach = self.cb_style.currentText() if hasattr(self, 'cb_style') else ""
+        ngon_ngu = self.cb_language.currentText() if hasattr(self, 'cb_language') else ""
+        ty_le_copy = self.cb_copy_ratio.currentText() if hasattr(self, 'cb_copy_ratio') else ""
+        so_canh = self.cb_scene_count.currentText() if hasattr(self, 'cb_scene_count') else ""
+        giong_nhan_vat = self.te_voice_desc.toPlainText().strip() if hasattr(self, 'te_voice_desc') else ""
+        loai_noi_dung = self.cb_flow_content_type.currentText() if hasattr(self, 'cb_flow_content_type') else ""
+        loai_khung_hinh = self.cb_flow_frame_type.currentText() if hasattr(self, 'cb_flow_frame_type') else ""
+        ty_le_khung_hinh = self.cb_flow_aspect_ratio.currentText() if hasattr(self, 'cb_flow_aspect_ratio') else ""
+        so_lan_tao = self.cb_flow_gen_count.currentText() if hasattr(self, 'cb_flow_gen_count') else ""
+        mo_hinh_ai = self.cb_flow_ai_model.currentText() if hasattr(self, 'cb_flow_ai_model') else ""
+
+        # Validate: Kie AI API Key bắt buộc
+        if not kie_api_key:
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập Kie AI API Key trước khi tạo hình tham chiếu.")
+            return
+
+        # Validate: Link youtube hoặc mô tả thêm
+        if not link_youtube and not mo_ta_them:
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập link video YouTube hoặc mô tả thêm trước khi tạo hình tham chiếu.")
+            return
+
+        # Cập nhật trạng thái nút
+        if hasattr(self, 'kie_btn_create_ref'):
+            self.kie_btn_create_ref.setText("⏳ Đang gửi yêu cầu...")
+            self.kie_btn_create_ref.setEnabled(False)
+        self._start_ref_api_animation()
+
+        payload = {
+            "kie_ai_api_key": kie_api_key,
+            "link_youtube": link_youtube,
+            "mo_ta_them": mo_ta_them,
+            "mo_hinh_sinh_kich_ban": mo_hinh_sinh_kich_ban,
+            "api_key": api_key,
+            "api_url_trinh_duyet": api_url_trinh_duyet,
+            "kich_thuoc_mo_profile": kich_thuoc_mo_profile,
+            "duong_dan_folder_video": duong_dan_folder_video,
+            "phong_cach": phong_cach,
+            "ngon_ngu": ngon_ngu,
+            "ty_le_copy": ty_le_copy,
+            "so_canh": so_canh,
+            "giong_nhan_vat": giong_nhan_vat,
+            "loai_noi_dung": loai_noi_dung,
+            "loai_khung_hinh": loai_khung_hinh,
+            "ty_le_khung_hinh": ty_le_khung_hinh,
+            "so_lan_tao": so_lan_tao,
+            "mo_hinh_ai": mo_hinh_ai,
+        }
+
+        def _kie_ref_worker(data):
+            try:
+                print(f"[Kie AI Ref] Đang gọi POST đến {KIE_AI_REF_IMAGE_WEBHOOK_URL}")
+                print(f"[Kie AI Ref] Payload: {data}")
+                # Gửi DUY NHẤT 1 lần request, đợi tối đa 5 phút (300 giây)
+                response = requests.post(
+                    KIE_AI_REF_IMAGE_WEBHOOK_URL,
+                    json=data,
+                    timeout=300  # 5 phút timeout
+                )
+
+                print(f"[Kie AI Ref] ✅ Kết quả HTTP {response.status_code}: {response.text[:500]}")
+
+                if response.status_code == 200:
+                    self.kie_ref_image_api_signal.emit(True, response.text)
+                else:
+                    self.kie_ref_image_api_signal.emit(False, f"Lỗi HTTP {response.status_code}: {response.text[:500]}")
+            except requests.Timeout:
+                self.kie_ref_image_api_signal.emit(False, "Timeout: API không phản hồi trong 5 phút.")
+            except requests.RequestException as e:
+                self.kie_ref_image_api_signal.emit(False, f"Lỗi kết nối: {str(e)}")
+            except Exception as e:
+                self.kie_ref_image_api_signal.emit(False, f"Lỗi: {str(e)}")
+
+        t = threading.Thread(target=_kie_ref_worker, args=(payload,), daemon=True)
+        t.start()
+
+    def _on_kie_ref_image_api_result(self, success, result_text):
+        """Xử lý kết quả từ API tạo hình tham chiếu Kie AI (chạy trên main thread)."""
+        self._stop_ref_api_animation()
+
+        # Khôi phục trạng thái nút
+        if hasattr(self, 'kie_btn_create_ref'):
+            self.kie_btn_create_ref.setText("🖼 Bấm để tạo hình tham chiếu nhân vật")
+            self.kie_btn_create_ref.setEnabled(True)
+
+        if success:
+            QMessageBox.information(
+                self,
+                "Thành công",
+                f"Đã gửi yêu cầu tạo hình tham chiếu nhân vật thành công!\n\nKết quả API:\n{result_text[:500]}"
+            )
+        else:
+            QMessageBox.critical(
+                self,
+                "Lỗi",
+                f"Gửi yêu cầu tạo hình tham chiếu thất bại!\n\n{result_text}"
+            )
 
     def createReferenceImage(self):
         """Gửi request POST tới webhook để tạo ảnh tham chiếu."""
