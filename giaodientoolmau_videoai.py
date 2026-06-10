@@ -5,6 +5,8 @@ import time
 import threading
 import base64
 import json
+import mimetypes
+import tempfile
 import requests
 
 # Thoi gian cho toi da khi goi API tao anh tham chieu. API tra nhanh hon thi chay tiep ngay.
@@ -16,8 +18,17 @@ REFERENCE_IMAGE_GENERATION_MAX_TIMEOUT = 10 * 60
 REFERENCE_IMAGE_GENERATION_START_TIMEOUT = 120
 REFERENCE_IMAGE_PROMPT_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/webhook_get_data_tool"
 KIE_AI_REF_IMAGE_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/Webhook_get_data_tool_kie"
+KOL_AI_PROMPT_WEBHOOK_URL = "https://n8n.aiplt.io.vn/webhook/Webhook_get_data_tool_kolai"
+KOL_AI_PROMPT_MAX_WAIT_SECONDS = 20 * 60
+KOL_AI_UPLOAD_IMAGE_MAX_BYTES = 350 * 1024
+KOL_AI_UPLOAD_IMAGE_MAX_DIMENSION = 1400
 KIE_AI_REF_IMAGE_IGNORED_STATUS_CODES = {502, 503, 504}
 KIE_AI_REF_IMAGE_MAX_WAIT_SECONDS = 20 * 60
+
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -1064,27 +1075,112 @@ class MultiThread(QThread):
 class PromptApiThread(QThread):
     result_ready = pyqtSignal(object)
 
-    def __init__(self, payload, post_url):
+    def __init__(self, payload, post_url, file_fields=None, timeout=60):
         super().__init__()
         self.payload = payload
         self.post_url = post_url
+        self.file_fields = file_fields or {}
+        self.timeout = timeout
+
+    @staticmethod
+    def _optimize_image_for_upload(file_path):
+        if os.path.getsize(file_path) <= KOL_AI_UPLOAD_IMAGE_MAX_BYTES:
+            return file_path, False
+
+        from PIL import Image, ImageOps
+
+        with Image.open(file_path) as source_image:
+            image = ImageOps.exif_transpose(source_image)
+            if image.mode in ("RGBA", "LA") or "transparency" in image.info:
+                rgba_image = image.convert("RGBA")
+                background = Image.new("RGB", rgba_image.size, "white")
+                background.paste(rgba_image, mask=rgba_image.getchannel("A"))
+                image = background
+            else:
+                image = image.convert("RGB")
+
+            image.thumbnail(
+                (KOL_AI_UPLOAD_IMAGE_MAX_DIMENSION, KOL_AI_UPLOAD_IMAGE_MAX_DIMENSION),
+                Image.Resampling.LANCZOS
+            )
+
+            temp_file = tempfile.NamedTemporaryFile(prefix="kol_ai_upload_", suffix=".jpg", delete=False)
+            temp_path = temp_file.name
+            temp_file.close()
+
+            quality = 85
+            while True:
+                image.save(temp_path, "JPEG", quality=quality, optimize=True)
+                if os.path.getsize(temp_path) <= KOL_AI_UPLOAD_IMAGE_MAX_BYTES:
+                    break
+                if quality > 45:
+                    quality -= 10
+                    continue
+                new_size = (max(1, int(image.width * 0.8)), max(1, int(image.height * 0.8)))
+                if new_size == image.size:
+                    break
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
+
+        print(
+            f"[Phân tích Prompt] Đã tối ưu ảnh {os.path.basename(file_path)}: "
+            f"{os.path.getsize(file_path)} -> {os.path.getsize(temp_path)} bytes"
+        )
+        return temp_path, True
 
     def run(self):
-        result_data = None
+        result = {
+            "_prompt_api_response": True,
+            "status_code": None,
+            "data": None,
+            "body": "",
+            "error": "",
+        }
         # 1. Gọi API POST để gửi thông tin lên N8N
         try:
             print(f"[Phân tích Prompt] Đang gọi API POST: {self.post_url}")
-            response_post = requests.post(self.post_url, json=self.payload, timeout=60)
-            print(f"[Phân tích Prompt] Đã gửi POST thành công - Status: {response_post.status_code}")
-            if response_post.status_code == 200:
+            if self.file_fields:
+                opened_files = []
+                temporary_files = []
                 try:
-                    result_data = response_post.json()
-                except ValueError:
-                    print("[Phân tích Prompt] Lỗi parse JSON từ API")
+                    files = {}
+                    for field_name, file_path in self.file_fields.items():
+                        upload_path, is_temporary = self._optimize_image_for_upload(file_path)
+                        if is_temporary:
+                            temporary_files.append(upload_path)
+                        file_handle = open(upload_path, "rb")
+                        opened_files.append(file_handle)
+                        mime_type = mimetypes.guess_type(upload_path)[0] or "application/octet-stream"
+                        files[field_name] = (os.path.basename(upload_path), file_handle, mime_type)
+                    response_post = requests.post(
+                        self.post_url,
+                        data=self.payload,
+                        files=files,
+                        timeout=self.timeout
+                    )
+                finally:
+                    for file_handle in opened_files:
+                        file_handle.close()
+                    for temp_path in temporary_files:
+                        try:
+                            os.remove(temp_path)
+                        except OSError:
+                            pass
+            else:
+                response_post = requests.post(self.post_url, json=self.payload, timeout=self.timeout)
+            result["status_code"] = response_post.status_code
+            result["body"] = response_post.text
+            print(f"[Phân tích Prompt] API trả về HTTP {response_post.status_code}")
+            print(f"[Phân tích Prompt] Response: {response_post.text[:2000]}")
+            try:
+                result["data"] = response_post.json()
+            except ValueError:
+                result["data"] = response_post.text
+                print("[Phân tích Prompt] Response không phải JSON")
         except Exception as e:
+            result["error"] = str(e)
             print(f"[Phân tích Prompt] Lỗi gọi API POST N8N: {e}")
                 
-        self.result_ready.emit(result_data)
+        self.result_ready.emit(result)
 
 class ConcatVideoThread(QThread):
     """Thread ghép nối tất cả video cảnh thành 1 video duy nhất bằng moviepy."""
@@ -1948,58 +2044,129 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             QMessageBox.warning(self, "Cảnh báo", "Đang phân tích tạo prompt, vui lòng đợi!")
             return
 
-        api_url = "https://thangdepzai.devttt.com/webhook/webhook_get_data_tool"
+        is_kol_tab = self.tabWidget.currentIndex() == 1
+        api_url = KOL_AI_PROMPT_WEBHOOK_URL if is_kol_tab else "https://thangdepzai.devttt.com/webhook/webhook_get_data_tool"
+
+        file_fields = {}
+        if is_kol_tab:
+            kol_ref_image = self.kie_le_kol_ref_image.text().strip() if hasattr(self, "kie_le_kol_ref_image") else ""
+            product_image = self.kie_le_product_image.text().strip() if hasattr(self, "kie_le_product_image") else ""
+            missing_images = []
+            if not kol_ref_image or not os.path.isfile(kol_ref_image):
+                missing_images.append("Hình tham chiếu đa chiều của KOL")
+            if not product_image or not os.path.isfile(product_image):
+                missing_images.append("Hình ảnh sản phẩm")
+            if missing_images:
+                QMessageBox.warning(
+                    self,
+                    "Thiếu hình ảnh",
+                    "Vui lòng chọn file hợp lệ cho:\n- " + "\n- ".join(missing_images)
+                )
+                return
+            file_fields = {
+                "hinh_tham_chieu_da_chieu_kol": os.path.abspath(kol_ref_image),
+                "hinh_anh_san_pham": os.path.abspath(product_image),
+            }
+
         print(f"[Manager] Bắt đầu gọi 1 API POST...")
         self.prompt_scene_count = input_soluong
         self._set_prompt_btn_running(True)
         self._animate_loading_button()
         QtWidgets.QApplication.processEvents()
 
-        is_kol_tab = self.tabWidget.currentIndex() == 1
-
         # Thu thập thông tin từ UI; tab KOL dùng 2 ảnh thay cho link YouTube.
-        payload = {
-            "link_youtube": "" if is_kol_tab else (self.veo3_le_link.text().strip() if hasattr(self, 'veo3_le_link') else ""),
-            "mo_ta_them": self.kie_le_desc.text().strip() if is_kol_tab else (self.veo3_le_desc.text().strip() if hasattr(self, 'veo3_le_desc') else ""),
-            "mo_hinh_sinh_kich_ban": self.cb_ai_model.currentText(),
-            "asynclab_api_key": self.le_api_key.text().strip(),
-            "phong_cach": self.cb_style.currentText(),
-            "ngon_ngu": self.cb_language.currentText(),
-            "ty_le_copy": self.cb_copy_ratio.currentText(),
-            "giong_nhan_vat": self.te_voice_desc.toPlainText().strip(),
-            "so_canh": input_soluong
-        }
         if is_kol_tab:
-            payload.update({
-                "hinh_tham_chieu_da_chieu_kol": self.kie_le_kol_ref_image.text().strip() if hasattr(self, "kie_le_kol_ref_image") else "",
-                "hinh_anh_san_pham": self.kie_le_product_image.text().strip() if hasattr(self, "kie_le_product_image") else "",
-            })
+            payload = {
+                "mo_ta_them": self.kie_le_desc.text().strip(),
+                "mo_hinh_sinh_kich_ban": self.cb_ai_model.currentText(),
+                "api_key": self.le_api_key.text().strip(),
+                "api_url_trinh_duyet": self.le_api_url_gpm.text().strip(),
+                "phien_ban_trinh_duyet": self.cb_browser.currentText(),
+                "phong_cach": self.cb_style.currentText(),
+                "ngon_ngu": self.cb_language.currentText(),
+                "ty_le_copy": self.cb_copy_ratio.currentText(),
+                "so_canh": str(input_soluong),
+                "giong_nhan_vat": self.te_voice_desc.toPlainText().strip(),
+            }
+        else:
+            payload = {
+                "link_youtube": self.veo3_le_link.text().strip() if hasattr(self, 'veo3_le_link') else "",
+                "mo_ta_them": self.veo3_le_desc.text().strip() if hasattr(self, 'veo3_le_desc') else "",
+                "mo_hinh_sinh_kich_ban": self.cb_ai_model.currentText(),
+                "asynclab_api_key": self.le_api_key.text().strip(),
+                "phong_cach": self.cb_style.currentText(),
+                "ngon_ngu": self.cb_language.currentText(),
+                "ty_le_copy": self.cb_copy_ratio.currentText(),
+                "giong_nhan_vat": self.te_voice_desc.toPlainText().strip(),
+                "so_canh": input_soluong
+            }
 
-        self.prompt_thread = PromptApiThread(payload, api_url)
+        request_timeout = KOL_AI_PROMPT_MAX_WAIT_SECONDS if is_kol_tab else 60
+        self.prompt_thread = PromptApiThread(
+            payload,
+            api_url,
+            file_fields=file_fields,
+            timeout=request_timeout
+        )
         self.prompt_thread.result_ready.connect(self._on_prompt_thread_finished)
         self.prompt_thread.start()
 
     def _on_prompt_thread_finished(self, result_data):
         self._set_prompt_btn_running(False)
+
+        response_status = None
+        response_body = ""
+        response_error = ""
+        if isinstance(result_data, dict) and result_data.get("_prompt_api_response"):
+            response_status = result_data.get("status_code")
+            response_body = str(result_data.get("body") or "")
+            response_error = str(result_data.get("error") or "")
+            result_data = result_data.get("data")
         
-        # Hàm đệ quy tìm dict chứa các prompt, phòng trường hợp webhook bọc dữ liệu nhiều lớp (ví dụ: [{"Content": "{\\"prompt_1\\":...}"}])
+        # Tìm prompt trong các cấu trúc phổ biến mà webhook/N8N có thể trả về.
         def find_prompt_dict(data):
             if isinstance(data, dict):
-                if "prompt_1" in data:
-                    return data
+                normalized_prompts = {}
+                for key, value in data.items():
+                    match = re.fullmatch(r"prompt[_\s-]*(\d+)", str(key), re.IGNORECASE)
+                    if match and value is not None:
+                        normalized_prompts[f"prompt_{int(match.group(1))}"] = str(value)
+                if normalized_prompts:
+                    return normalized_prompts
+
+                keys_lower = {str(key).lower(): key for key in data}
+                scene_key = keys_lower.get("scenenumber") or keys_lower.get("scene_number")
+                content_key = keys_lower.get("content") or keys_lower.get("prompt") or keys_lower.get("video_prompt")
+                if scene_key is not None and content_key is not None:
+                    try:
+                        scene_number = int(data[scene_key])
+                        return {f"prompt_{scene_number}": str(data[content_key])}
+                    except (TypeError, ValueError):
+                        pass
+
+                combined_prompts = {}
                 for v in data.values():
                     res = find_prompt_dict(v)
-                    if res: return res
+                    if res:
+                        combined_prompts.update(res)
+                if combined_prompts:
+                    return combined_prompts
             elif isinstance(data, list):
+                combined_prompts = {}
                 for item in data:
                     res = find_prompt_dict(item)
-                    if res: return res
+                    if res:
+                        combined_prompts.update(res)
+                if combined_prompts:
+                    return combined_prompts
             elif isinstance(data, str):
-                import json
+                text = data.strip()
+                if text.startswith("```") and text.endswith("```"):
+                    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
                 try:
-                    parsed = json.loads(data)
+                    parsed = json.loads(text)
                     return find_prompt_dict(parsed)
-                except:
+                except (TypeError, ValueError):
                     pass
             return None
 
@@ -2029,7 +2196,53 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             else:
                 QMessageBox.warning(self, "Lỗi", "Tìm thấy cấu trúc Prompt nhưng không khớp với các cảnh trên giao diện!")
         else:
-            QMessageBox.warning(self, "Lỗi", "Không nhận được dữ liệu Prompt hợp lệ từ API (không tìm thấy prompt_1)!")
+            def is_n8n_webhook_input_echo(data):
+                if isinstance(data, dict):
+                    keys_lower = {str(key).lower() for key in data}
+                    if {"headers", "body", "webhookurl", "executionmode"}.issubset(keys_lower):
+                        return True
+                    return any(is_n8n_webhook_input_echo(value) for value in data.values())
+                if isinstance(data, list):
+                    return any(is_n8n_webhook_input_echo(item) for item in data)
+                return False
+
+            if response_status == 413:
+                QMessageBox.warning(
+                    self,
+                    "Ảnh vượt giới hạn upload",
+                    "Máy chủ nginx từ chối request vì tổng dung lượng ảnh quá lớn (HTTP 413).\n\n"
+                    "Ứng dụng đã tự động tối ưu ảnh trước khi gửi. Nếu lỗi vẫn xảy ra, quản trị máy chủ "
+                    "cần tăng cấu hình nginx client_max_body_size cho webhook KOL AI."
+                )
+                return
+
+            if response_status == 200 and is_n8n_webhook_input_echo(result_data):
+                QMessageBox.warning(
+                    self,
+                    "Webhook chưa trả kết quả Prompt",
+                    "Webhook n8n đã nhận request thành công nhưng chỉ trả lại nguyên dữ liệu đầu vào, "
+                    "chưa trả kết quả tạo Prompt.\n\n"
+                    "Cần kiểm tra workflow Webhook_get_data_tool_kolai trên n8n:\n"
+                    "- Kết nối Webhook node tới các node phân tích/tạo Prompt.\n"
+                    "- Đặt Webhook Response thành 'Using Respond to Webhook Node' hoặc trả kết quả của node cuối.\n"
+                    "- Node trả kết quả cuối phải chứa prompt_1, prompt_2, ... theo số cảnh."
+                )
+                return
+
+            details = []
+            if response_error:
+                details.append(f"Lỗi kết nối: {response_error}")
+            if response_status is not None:
+                details.append(f"HTTP status: {response_status}")
+            if response_body:
+                details.append(f"Response API: {response_body[:1000]}")
+            if not details:
+                details.append("API không trả về dữ liệu.")
+            QMessageBox.warning(
+                self,
+                "Lỗi",
+                "Không nhận được dữ liệu Prompt hợp lệ từ API.\n\n" + "\n\n".join(details)
+            )
 
     def _get_active_scene_prompt_boxes(self):
         target_tab = self.tab_veo3 if self.tabWidget.currentIndex() == 0 else self.tab_kie_ai
