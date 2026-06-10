@@ -11,13 +11,14 @@ Sử dụng:
 """
 
 from PyQt5 import QtCore, QtGui, QtWidgets
-
-# ══════════════════════════════════════════════════════════════
-# License key hợp lệ (có thể mở rộng thành danh sách hoặc gọi API sau này)
-# ══════════════════════════════════════════════════════════════
-VALID_LICENSE_KEYS = [
-    "Thang@123",
-]
+import sys
+import os
+import json
+import requests
+import socket
+import platform
+import subprocess
+import hashlib
 
 
 class LicenseKeyDialog(QtWidgets.QDialog):
@@ -33,8 +34,189 @@ class LicenseKeyDialog(QtWidgets.QDialog):
             | QtCore.Qt.MSWindowsFixedSizeDialogHint
         )
         self._accepted = False
+        
+        # Cấu hình API và thông tin phần cứng
+        self.category = "Tool_video_AI"
+        self._init_paths()
+        self.device_id = self._get_device_id()
+        self.device_name = self._get_device_name()
+        self.os_info = self._get_os_info()
+        self.app_version = self._get_app_version()
+
         self._build_ui()
         self._apply_styles()
+
+    def _init_paths(self):
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+            internal_dir = os.path.join(exe_dir, '_internal')
+            self.base_path = internal_dir if os.path.exists(os.path.join(internal_dir, 'config.env')) else exe_dir
+        else:
+            self.base_path = os.path.dirname(os.path.abspath(__file__))
+        self.license_path = os.path.join(self.base_path, "license.json")
+
+    def _get_device_id(self):
+        device_str = ""
+        # 1. Thử lấy Motherboard UUID qua WMIC
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            
+            out = subprocess.check_output(
+                "wmic csproduct get uuid", 
+                startupinfo=startupinfo,
+                stderr=subprocess.DEVNULL,
+                shell=True
+            ).decode().split()
+            for item in out:
+                item_clean = item.strip()
+                if item_clean and "UUID" not in item_clean and "uuid" not in item_clean:
+                    if "FFFFFFFF" not in item_clean and "00000000" not in item_clean:
+                        device_str = item_clean
+                        break
+        except Exception:
+            pass
+            
+        # 2. Thử lấy MachineGuid từ Registry nếu cách 1 thất bại
+        if not device_str:
+            try:
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography")
+                guid, _ = winreg.QueryValueEx(key, "MachineGuid")
+                winreg.CloseKey(key)
+                if guid:
+                    device_str = guid.strip()
+            except Exception:
+                pass
+                
+        # 3. Thử lấy MAC address qua uuid.getnode nếu vẫn thất bại
+        if not device_str:
+            try:
+                import uuid
+                mac = uuid.getnode()
+                if mac:
+                    device_str = f"MAC-{mac}"
+            except Exception:
+                pass
+                
+        if not device_str:
+            device_str = "UNKNOWN-DEVICE-ID"
+
+        # Băm thành chuỗi cố định đẹp và an toàn
+        return hashlib.sha256(device_str.encode('utf-8')).hexdigest()
+
+    def _get_device_name(self):
+        try:
+            return socket.gethostname()
+        except Exception:
+            try:
+                return platform.node()
+            except Exception:
+                return "UnknownPC"
+
+    def _get_os_info(self):
+        try:
+            return f"{platform.system()} {platform.release()} (v{platform.version()})"
+        except Exception:
+            return "Windows"
+
+    def _get_app_version(self):
+        try:
+            config_path = os.path.join(self.base_path, "config.env")
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("VERSION="):
+                            return line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+        return "1.0"
+
+    def _save_license_key(self, key):
+        try:
+            with open(self.license_path, "w", encoding="utf-8") as f:
+                json.dump({"license_key": key}, f, indent=4)
+        except Exception as e:
+            print(f"Lỗi lưu file license: {e}")
+
+    def _load_saved_license_key(self):
+        try:
+            if os.path.exists(self.license_path):
+                with open(self.license_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return data.get("license_key", "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _activate_license_api(self, key):
+        """
+        Gọi API active License Key.
+        Trả về (success: bool, message: str)
+        """
+        url = "http://localhost:8000/api/activation/activate"
+        payload = {
+            "license_key": key,
+            "device_id": self.device_id,
+            "category": self.category,
+            "device_name": self.device_name,
+            "os_info": self.os_info,
+            "app_version": self.app_version
+        }
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            try:
+                res_data = response.json()
+            except Exception:
+                res_data = {}
+
+            # Chỉ chấp nhận khi response JSON có status == "valid"
+            if isinstance(res_data, dict) and res_data.get("status") == "valid":
+                return True, "Kích hoạt bản quyền thành công!"
+            else:
+                msg = ""
+                if isinstance(res_data, dict):
+                    msg = res_data.get("message") or res_data.get("error") or res_data.get("detail")
+                if not msg:
+                    status_val = res_data.get("status", "") if isinstance(res_data, dict) else ""
+                    msg = f"License Key không hợp lệ (status: {status_val})" if status_val else f"Mã lỗi HTTP: {response.status_code}"
+                return False, f"Lỗi kích hoạt: {msg}"
+        except requests.exceptions.RequestException as e:
+            return False, f"Không thể kết nối máy chủ: {str(e)}"
+
+    def _check_license_api(self, key):
+        """
+        Gọi API check License Key.
+        Trả về (success: bool, status: str)
+        """
+        url = "http://localhost:8000/api/activation/check"
+        payload = {
+            "license_key": key,
+            "device_id": self.device_id,
+            "category": self.category
+        }
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            try:
+                res_data = response.json()
+            except Exception:
+                res_data = {}
+
+            # Chỉ chấp nhận khi response JSON có status == "valid"
+            if isinstance(res_data, dict) and res_data.get("status") == "valid":
+                return True, "valid"
+            else:
+                return False, "invalid"
+        except requests.exceptions.RequestException:
+            return False, "network"
 
     # ──────────────────────────────────────────────
     # Xây dựng giao diện
@@ -150,19 +332,37 @@ class LicenseKeyDialog(QtWidgets.QDialog):
         if not key:
             self._show_error("⚠️  Vui lòng nhập License Key!")
             return
-        if key in VALID_LICENSE_KEYS:
+        
+        # Đổi trạng thái nút kích hoạt để báo đang chạy
+        self.btn_activate.setEnabled(False)
+        self.btn_activate.setText("⏳  ĐANG KÍCH HOẠT BẢN QUYỀN...")
+        QtWidgets.QApplication.processEvents() # Cập nhật UI ngay lập tức
+        
+        print(f"[License] Đang kích hoạt License Key: {key}...")
+        sys.stdout.flush()
+        success, msg = self._activate_license_api(key)
+        
+        if success:
+            print("[License] Kích hoạt bản quyền thành công!")
+            sys.stdout.flush()
+            self._save_license_key(key)
             self._accepted = True
             self.accept()
         else:
-            self._show_error("❌  License Key không hợp lệ hoặc đã hết hạn!\nVui lòng kiểm tra lại hoặc liên hệ Admin.")
+            print(f"[License] Kích hoạt bản quyền thất bại! (Lỗi: {msg})")
+            sys.stdout.flush()
+            self._show_error(f"❌  {msg}")
             self.le_license.selectAll()
             self.le_license.setFocus()
+            self.btn_activate.setEnabled(True)
+            self.btn_activate.setText("🔓  KÍCH HOẠT BẢN QUYỀN")
 
-    def _show_error(self, msg):
+    def _show_error(self, msg, shake=True):
         self.lb_error.setText(msg)
         self.lb_error.setVisible(True)
-        # Hiệu ứng rung nhẹ
-        self._shake_animation()
+        if shake:
+            # Hiệu ứng rung nhẹ
+            self._shake_animation()
 
     def _shake_animation(self):
         """Hiệu ứng rung nhẹ khi nhập sai."""
@@ -185,6 +385,25 @@ class LicenseKeyDialog(QtWidgets.QDialog):
 
     def exec_accepted(self):
         """Chạy dialog và trả về True nếu key hợp lệ, False nếu đóng/thoát."""
+        saved_key = self._load_saved_license_key()
+        if saved_key:
+            print(f"[License] Phát hiện key lưu sẵn: {saved_key}. Đang xác thực...")
+            sys.stdout.flush()
+            is_valid, status = self._check_license_api(saved_key)
+            if is_valid:
+                print("[License] Xác thực tự động thành công!")
+                sys.stdout.flush()
+                self._accepted = True
+                return True
+            else:
+                print(f"[License] Xác thực tự động thất bại! (Trạng thái: {status})")
+                sys.stdout.flush()
+                self.le_license.setText(saved_key)
+                if status == "network":
+                    self._show_error("⚠️  Không thể kết nối máy chủ để kiểm tra bản quyền.\nVui lòng kiểm tra kết nối mạng.", shake=False)
+                else:
+                    self._show_error("❌  License Key đã lưu không hợp lệ hoặc đã hết hạn!\nVui lòng kích hoạt lại.", shake=False)
+                
         result = self.exec_()
         return self._accepted and result == QtWidgets.QDialog.Accepted
 
