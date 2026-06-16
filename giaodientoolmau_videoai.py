@@ -1825,6 +1825,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         # Kết nối logic tự động Kie AI từ file riêng (kie_ai_auto.py)
         setup_kie_ai_connections(self)
 
+        # Tự động kiểm tra cập nhật sau khi khởi động và license key đã hợp lệ (sau 1.5 giây)
+        QtCore.QTimer.singleShot(1500, lambda: self._update_version(silent=True))
+
     def _animate_loading_button(self):
         self.dot_count = (self.dot_count + 1) % 4
         dots = "." * self.dot_count
@@ -2566,6 +2569,12 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             self.config["VERSION"] = self._decode_env_value(values["VERSION"])
         else:
             self.config["VERSION"] = "1.0"
+
+        # Cập nhật text hiển thị phiên bản lên các label trên giao diện
+        version_text = self.config["VERSION"]
+        for widget in self.findChildren(QtWidgets.QLabel):
+            if widget.objectName() == "verLabel":
+                widget.setText(f"Phiên bản {version_text}")
 
         if "CURRENT_TAB" in values:
             try:
@@ -3346,41 +3355,118 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         else:
             QMessageBox.critical(self, "Lỗi ghép video", result)
 
-    def _update_version(self):
-        """Cho phép người dùng cập nhật phiên bản tool."""
-        from PyQt5 import QtWidgets
+    def _update_version(self, checked=False, silent=False):
+        """Kiểm tra và cập nhật phiên bản tự động bằng API."""
+        from PyQt5 import QtWidgets, QtCore
+        import sys
+        import api_check_version
         
-        # Danh sách phiên bản có sẵn
-        available_versions = ["1.0", "1.1", "1.2", "1.3"]
-        
-        # Lấy phiên bản hiện tại từ config
         current_version = self.config.get("VERSION", "1.0")
+        print(f"[AutoUpdate] Starting check for updates... Current version: {current_version}")
+        sys.stdout.flush()
         
-        # Tìm index của phiên bản hiện tại
-        current_index = available_versions.index(current_version) if current_version in available_versions else 0
+        # Bắt đầu kiểm tra phiên bản
+        has_update, new_version, update_url, error_msg = api_check_version.check_for_updates(current_version)
+        print(f"[AutoUpdate] Result - has_update: {has_update}, new_version: {new_version}, url: {update_url}, error: {error_msg}")
+        sys.stdout.flush()
         
-        # Hiển thị dialog chọn phiên bản
-        selected_version, ok = QtWidgets.QInputDialog.getItem(
-            self, 
-            "Cập nhật phiên bản", 
-            "Chọn phiên bản:",
-            available_versions,
-            current_index,
-            editable=False
+        if error_msg:
+            if not silent:
+                QtWidgets.QMessageBox.warning(self, "Lỗi kiểm tra bản cập nhật", error_msg)
+            return
+            
+        if not has_update:
+            if not silent:
+                QtWidgets.QMessageBox.information(
+                    self, 
+                    "Thông báo", 
+                    f"Bạn đang sử dụng phiên bản mới nhất ({current_version})."
+                )
+            return
+            
+        # Hỏi người dùng có cập nhật không
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Phát hiện bản cập nhật mới",
+            f"Đã tìm thấy phiên bản mới: {new_version} (Hiện tại: {current_version}).\n"
+            "Bạn có muốn tải xuống và cài đặt bản cập nhật ngay bây giờ?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes
         )
         
-        if ok and selected_version.strip():
-            # Cập nhật config
-            self.config["VERSION"] = selected_version.strip()
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
             
-            # Cập nhật UI trên cả hai tab
-            # Tìm tất cả QLabel với objectName "verLabel" và cập nhật text
-            for widget in self.findChildren(QtWidgets.QLabel):
-                if widget.objectName() == "verLabel":
-                    widget.setText(f"Phiên bản {selected_version.strip()}")
+        # Xác định đường dẫn file exe đích
+        if getattr(sys, 'frozen', False):
+            target_exe_path = sys.executable
+            # Khi chạy dạng exe, lưu file tải về thành .new cạnh file exe gốc
+            dest_path = target_exe_path + ".new"
+        else:
+            # Khi dev, đặt tên exe trong thư mục project
+            target_exe_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 
+                "giaodientoolmau_videoai.exe"
+            )
+            dest_path = target_exe_path
             
-            # Lưu config vào file
-            self._save_config()
+        # Hiển thị progress dialog
+        progress_dialog = QtWidgets.QProgressDialog("Đang tải bản cập nhật...", "Hủy", 0, 100, self)
+        progress_dialog.setWindowTitle("Đang cập nhật")
+        progress_dialog.setWindowModality(QtCore.Qt.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        
+        # Khởi chạy thread tải file
+        worker = api_check_version.DownloadWorker(update_url, dest_path)
+        
+        def handle_progress(percent):
+            progress_dialog.setValue(percent)
+            
+        def handle_finished(success, result_msg):
+            progress_dialog.close()
+            if success:
+                if getattr(sys, 'frozen', False):
+                    # Tiến hành gọi updater bat để đè exe và restart
+                    api_check_version.apply_update_windows(target_exe_path)
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        "Cập nhật thành công",
+                        "Đã tải xong bản cập nhật. Ứng dụng sẽ tự động khởi chạy lại để hoàn tất quá trình cài đặt."
+                    )
+                    QtWidgets.QApplication.quit()
+                    sys.exit(0)
+                else:
+                    # Chạy dev: Đè file trực tiếp (nếu tên file temp khác dest_path)
+                    # Cập nhật config phiên bản mới
+                    self.config["VERSION"] = new_version
+                    for widget in self.findChildren(QtWidgets.QLabel):
+                         if widget.objectName() == "verLabel":
+                             widget.setText(f"Phiên bản {new_version}")
+                    self._save_config()
+                    
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        "Cập nhật thành công",
+                        f"Cập nhật hoàn tất! File exe mới đã được tải và ghi đè vào:\n{target_exe_path}"
+                    )
+            else:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Lỗi tải bản cập nhật",
+                    f"Quá trình tải bản cập nhật thất bại:\n{result_msg}"
+                )
+                
+        worker.progress.connect(handle_progress)
+        worker.finished.connect(handle_finished)
+        
+        # Cho phép hủy tải
+        progress_dialog.canceled.connect(worker.terminate)
+        
+        # Giữ tham chiếu thread để không bị GC thu hồi
+        self._updater_worker = worker
+        
+        worker.start()
 
     def closeEvent(self, event):
         # Stop và dọn dẹp các Thread khi ấn X tắt phần mềm
