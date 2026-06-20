@@ -11,8 +11,7 @@ import requests
 import subprocess
 from PyQt5 import QtCore, QtWidgets
 
-API_URL = "http://127.0.0.1:8000/api/categories/40c8a1e9-5981-4be9-b6eb-921a072c99e9"
-JSON_FILENAME = "response_api_check_version.json"
+API_URL = "https://thangdz.com/api/categories/48576c9c-6da3-4690-885c-71b18ac49c3d"
 
 def get_base_path():
     """Lấy thư mục gốc chứa ứng dụng."""

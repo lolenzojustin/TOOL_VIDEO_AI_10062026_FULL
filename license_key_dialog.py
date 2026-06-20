@@ -156,7 +156,7 @@ class LicenseKeyDialog(QtWidgets.QDialog):
         Gọi API active License Key.
         Trả về (success: bool, message: str)
         """
-        url = "http://localhost:8000/api/activation/activate"
+        url = "https://thangdz.com/api/activation/activate"
         payload = {
             "license_key": key,
             "device_id": self.device_id,
@@ -170,6 +170,7 @@ class LicenseKeyDialog(QtWidgets.QDialog):
         }
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=10)
+            print(response.json())
             try:
                 res_data = response.json()
             except Exception:
@@ -194,7 +195,7 @@ class LicenseKeyDialog(QtWidgets.QDialog):
         Gọi API check License Key.
         Trả về (success: bool, status: str)
         """
-        url = "http://localhost:8000/api/activation/check"
+        url = "https://thangdz.com/api/activation/check"
         payload = {
             "license_key": key,
             "device_id": self.device_id,
