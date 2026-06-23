@@ -405,8 +405,8 @@ class Ui_Widget(object):
         sc = self._sc
         card = QtWidgets.QFrame()
         card.setObjectName("sceneCardActive" if active else "sceneCard")
-        card.setMinimumHeight(_s(140, sc))
-        card.setMaximumHeight(_s(165, sc))
+        card.setMinimumHeight(_s(205, sc))
+        card.setMaximumHeight(_s(245, sc))
 
         hl = QtWidgets.QHBoxLayout(card)
         hl.setContentsMargins(_s(10,sc), _s(10,sc), _s(10,sc), _s(10,sc))
@@ -440,7 +440,7 @@ class Ui_Widget(object):
 
         prompt = QtWidgets.QTextEdit()
         prompt.setObjectName("promptBox")
-        prompt.setFixedHeight(_s(54, sc))
+        prompt.setFixedHeight(_s(120, sc))
         prompt.setPlainText(
             "Đây là nơi hiển thị PROMPT của cảnh này (Ví dụ: anime style, vivid colors, clean lines, soft cel shading, detailed eyes, high-quality character art..."
         )

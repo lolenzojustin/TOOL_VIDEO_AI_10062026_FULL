@@ -123,13 +123,8 @@ class LicenseKeyDialog(QtWidgets.QDialog):
 
     def _get_app_version(self):
         try:
-            config_path = os.path.join(self.base_path, "config.env")
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith("VERSION="):
-                            return line.split("=", 1)[1].strip()
+            import api_check_version
+            return api_check_version.APP_VERSION
         except Exception:
             pass
         return "1.0"

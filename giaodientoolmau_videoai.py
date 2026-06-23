@@ -1779,6 +1779,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         self.is_ref_api_running = False
         self.ref_api_tick = 0
         self.prompt_scene_count = 0
+        self.prompt_target_tab_index = 0
 
         # Kết nối sự kiện Click cho nút "BẮT ĐẦU TẠO VIDEO" bên tab Veo3 và Kie AI
         self.veo3_btn_analyze.clicked.connect(self.startThreadVeo3)
@@ -2048,6 +2049,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             return
 
         is_kol_tab = self.tabWidget.currentIndex() == 1
+        self.prompt_target_tab_index = self.tabWidget.currentIndex()
         api_url = KOL_AI_PROMPT_WEBHOOK_URL if is_kol_tab else "https://thangdepzai.devttt.com/webhook/webhook_get_data_tool"
 
         file_fields = {}
@@ -2127,25 +2129,62 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             result_data = result_data.get("data")
         
         # Tìm prompt trong các cấu trúc phổ biến mà webhook/N8N có thể trả về.
+        def extract_scene_number_from_text(value):
+            if value is None:
+                return None
+            match = re.search(r"\bscene\s*#?\s*(\d+)\b", str(value), re.IGNORECASE)
+            if not match:
+                return None
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                return None
+
+        def get_content_value(data):
+            if not isinstance(data, dict):
+                return None
+            keys_lower = {str(key).lower(): key for key in data}
+            content_key = keys_lower.get("content") or keys_lower.get("prompt") or keys_lower.get("video_prompt")
+            if content_key is None:
+                return None
+            return data[content_key]
+
+        def normalize_prompt_content(value):
+            text = str(value or "")
+            text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+            text = re.sub(r"^\s*scene\s*#?\s*\d+\s*:\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"^\s*short\s+cinematic\s+prompt\s*:\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+
         def find_prompt_dict(data):
             if isinstance(data, dict):
                 normalized_prompts = {}
                 for key, value in data.items():
                     match = re.fullmatch(r"prompt[_\s-]*(\d+)", str(key), re.IGNORECASE)
                     if match and value is not None:
-                        normalized_prompts[f"prompt_{int(match.group(1))}"] = str(value)
+                        normalized_prompts[f"prompt_{int(match.group(1))}"] = normalize_prompt_content(value)
                 if normalized_prompts:
                     return normalized_prompts
 
                 keys_lower = {str(key).lower(): key for key in data}
-                scene_key = keys_lower.get("scenenumber") or keys_lower.get("scene_number")
-                content_key = keys_lower.get("content") or keys_lower.get("prompt") or keys_lower.get("video_prompt")
-                if scene_key is not None and content_key is not None:
-                    try:
-                        scene_number = int(data[scene_key])
-                        return {f"prompt_{scene_number}": str(data[content_key])}
-                    except (TypeError, ValueError):
-                        pass
+                scene_key = (
+                    keys_lower.get("scenenumber")
+                    or keys_lower.get("scene_number")
+                    or keys_lower.get("scene")
+                )
+                content_value = get_content_value(data)
+                if content_value is not None:
+                    scene_number = None
+                    if scene_key is not None:
+                        try:
+                            scene_number = int(data[scene_key])
+                        except (TypeError, ValueError):
+                            scene_number = None
+                    if scene_number is None:
+                        scene_number = extract_scene_number_from_text(content_value)
+                    if scene_number is not None:
+                        return {f"prompt_{scene_number}": normalize_prompt_content(content_value)}
 
                 combined_prompts = {}
                 for v in data.values():
@@ -2156,10 +2195,14 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                     return combined_prompts
             elif isinstance(data, list):
                 combined_prompts = {}
-                for item in data:
+                for item_index, item in enumerate(data, start=1):
                     res = find_prompt_dict(item)
                     if res:
                         combined_prompts.update(res)
+                    else:
+                        content_value = get_content_value(item)
+                        if content_value is not None:
+                            combined_prompts[f"prompt_{item_index}"] = normalize_prompt_content(content_value)
                 if combined_prompts:
                     return combined_prompts
             elif isinstance(data, str):
@@ -2176,8 +2219,8 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         prompt_dict = find_prompt_dict(result_data)
         
         if prompt_dict:
-            # Lấy tab đang active để update (0 = Veo3, 1 = KOL)
-            current_tab_index = self.tabWidget.currentIndex()
+            # Update tab that started the prompt request, even if the user switches tabs while waiting.
+            current_tab_index = getattr(self, "prompt_target_tab_index", self.tabWidget.currentIndex())
             if current_tab_index == 0:
                 target_tab = self.tab_veo3
             else:
@@ -2564,11 +2607,9 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             else:
                 widget.setText(value)
 
-        # Load version từ config
-        if "VERSION" in values:
-            self.config["VERSION"] = self._decode_env_value(values["VERSION"])
-        else:
-            self.config["VERSION"] = "1.0"
+        # Load version từ APP_VERSION để luôn hiển thị và đồng bộ chính xác
+        import api_check_version
+        self.config["VERSION"] = api_check_version.APP_VERSION
 
         # Cập nhật text hiển thị phiên bản lên các label trên giao diện
         version_text = self.config["VERSION"]
@@ -3361,7 +3402,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         import sys
         import api_check_version
         
-        current_version = self.config.get("VERSION", "1.0")
+        current_version = api_check_version.APP_VERSION
         print(f"[AutoUpdate] Starting check for updates... Current version: {current_version}")
         sys.stdout.flush()
         
