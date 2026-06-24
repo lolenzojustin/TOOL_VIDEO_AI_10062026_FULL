@@ -164,7 +164,7 @@ class Ui_Widget(object):
         lv.addWidget(lbl_note_style)
 
         lv.addWidget(self._lbl("Ngôn từ kịch bản và giọng nói", "grpLabel"))
-        self.cb_language = self._combo(["us English", "Tiếng Việt", "Japanese", "Korean"])
+        self.cb_language = self._combo(["us English", "Tiếng Việt"])
         lv.addWidget(self.cb_language)
 
         lv.addWidget(self._lbl("Tỷ lệ copy từ video gốc", "grpLabel"))
@@ -285,7 +285,7 @@ class Ui_Widget(object):
 
         # Top row: language + version + New + running
         topRow = QtWidgets.QHBoxLayout()
-        lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English", "Japanese"])
+        lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English"])
         lang_cb.setMinimumWidth(_s(220, sc))
         ver_lb = QtWidgets.QLabel("Phiên bản 1.0")
         ver_lb.setObjectName("verLabel")
@@ -480,7 +480,7 @@ class Ui_Widget(object):
 
         # ── Top row: language + version + New + running (giống Veo3)
         topRow = QtWidgets.QHBoxLayout()
-        kol_lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English", "Japanese"])
+        kol_lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English"])
         kol_lang_cb.setMinimumWidth(_s(220, sc))
         kol_ver_lb = QtWidgets.QLabel("Phiên bản 1.0")
         kol_ver_lb.setObjectName("verLabel")
@@ -673,7 +673,7 @@ class Ui_Widget(object):
 
         # Top row: language + version + New + running (giống Veo3)
         topRow = QtWidgets.QHBoxLayout()
-        kie_lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English", "Japanese"])
+        kie_lang_cb = self._combo(["Tiếng Việt (Vietnamese)", "English"])
         kie_lang_cb.setMinimumWidth(_s(220, sc))
         kie_ver_lb = QtWidgets.QLabel("Phiên bản 1.0")
         kie_ver_lb.setObjectName("verLabel")
