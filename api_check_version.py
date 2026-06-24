@@ -12,7 +12,7 @@ import subprocess
 from PyQt5 import QtCore, QtWidgets
 
 API_URL = "https://thangdz.com/api/categories/48576c9c-6da3-4690-885c-71b18ac49c3d"
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.13"
 
 def get_base_path():
     """Lấy thư mục gốc chứa ứng dụng."""

@@ -37,7 +37,7 @@ def build_onedir():
     build_dir = os.path.join(project_dir, "build")
     
     # Read version dynamically from api_check_version.py
-    version = "1.0.10" # default fallback
+    version = "1.0.13" # default fallback
     try:
         sys.path.insert(0, project_dir)
         import api_check_version
@@ -79,10 +79,18 @@ def build_onedir():
         except Exception as e:
             print(f"[!] Version comparison parsing error: {e}")
 
-    # 1. Clean previous build files: build, dist, AI_Video_Tool.spec, AI_Video_Tool_v*.zip
+    # 1. Clean previous build files: build, dist, AI_Video_Tool.spec, AI_Video_Tool_v*.zip, root AI_Video_Tool.exe
     print("[-] Cleaning up old build files and previous ZIP packages...")
     remove_dir(dist_dir)
     remove_dir(build_dir)
+    
+    root_exe_path = os.path.join(project_dir, "AI_Video_Tool.exe")
+    if os.path.exists(root_exe_path):
+        try:
+            os.remove(root_exe_path)
+            print("[-] Removed old root executable.")
+        except Exception as e:
+            print(f"[!] Warning: Failed to remove old root executable: {e}")
         
     spec_path = os.path.join(project_dir, "AI_Video_Tool.spec")
     if os.path.exists(spec_path):
@@ -227,6 +235,26 @@ CURRENT_TAB=0
     has_config = os.path.exists(os.path.join(unzipped_root, "config.env"))
     has_license = os.path.exists(os.path.join(unzipped_root, "license.json"))
     
+    # Check EXE file size
+    exe_size_ok = True
+    exe_size_mb = 0
+    if has_exe:
+        exe_path_unzipped = os.path.join(unzipped_root, "AI_Video_Tool.exe")
+        exe_size_mb = os.path.getsize(exe_path_unzipped) / (1024 * 1024)
+        if exe_size_mb > 50:  # Bootloader should be small, definitely < 50MB
+            exe_size_ok = False
+            print(f"[!] Warning: AI_Video_Tool.exe is too large ({exe_size_mb:.2f} MB). It might be a onefile EXE copied by mistake!")
+            
+    # Check python runtime dll in _internal
+    has_python_dll = False
+    if has_internal:
+        internal_dir = os.path.join(unzipped_root, "_internal")
+        for f in os.listdir(internal_dir):
+            if f.lower().startswith("python") and f.lower().endswith(".dll"):
+                has_python_dll = True
+                print(f"[+] Found Python runtime DLL: {f}")
+                break
+    
     # Check for excluded files/directories
     has_py_files = False
     has_venv = False
@@ -262,13 +290,15 @@ CURRENT_TAB=0
     print("\n--- ZIP VERIFICATION REPORT ---")
     print(f"1. No python (.py) source files: {'PASSED' if not has_py_files else 'FAILED'}")
     print(f"2. AI_Video_Tool.exe present: {'PASSED' if has_exe else 'FAILED'}")
-    print(f"3. _internal runtime folder present: {'PASSED' if has_internal else 'FAILED'}")
-    print(f"4. Clean config.env present: {'PASSED' if has_config else 'FAILED'}")
-    print(f"5. Empty license.json present & verified: {'PASSED' if (has_license and license_key_valid) else 'FAILED'}")
-    print(f"6. Excluded venv/build/dist/.git: {'PASSED' if not (has_venv or has_build or has_dist_inside or has_git) else 'FAILED'}")
+    print(f"3. AI_Video_Tool.exe size < 50MB: {'PASSED' if exe_size_ok else 'FAILED'} ({exe_size_mb:.2f} MB)")
+    print(f"4. _internal runtime folder present: {'PASSED' if has_internal else 'FAILED'}")
+    print(f"5. Python runtime DLL inside _internal: {'PASSED' if has_python_dll else 'FAILED'}")
+    print(f"6. Clean config.env present: {'PASSED' if has_config else 'FAILED'}")
+    print(f"7. Empty license.json present & verified: {'PASSED' if (has_license and license_key_valid) else 'FAILED'}")
+    print(f"8. Excluded venv/build/dist/.git: {'PASSED' if not (has_venv or has_build or has_dist_inside or has_git) else 'FAILED'}")
     print("--------------------------------\n")
     
-    if has_py_files or not (has_exe and has_internal and has_config and has_license and license_key_valid):
+    if has_py_files or not (has_exe and exe_size_ok and has_internal and has_python_dll and has_config and has_license and license_key_valid):
         print("[!] Verification failed. ZIP package is incomplete or invalid.")
         remove_dir(test_extract_dir)
         sys.exit(1)
