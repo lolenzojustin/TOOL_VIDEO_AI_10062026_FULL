@@ -83,7 +83,8 @@ class MultiThread(QThread):
             "frame_type": "Khung hình",
             "aspect_ratio": "9:16",
             "gen_count": "1x",
-            "ai_model": "Veo 3.1 - Lite"
+            "ai_model": "Veo 3.1 - Lite",
+            "duration": "8s"
         }
         self.is_running = True
         self._stop_event = threading.Event()  # Event để dừng sleep ngay lập tức
@@ -612,7 +613,7 @@ class MultiThread(QThread):
                     fs = self.flow_settings
                     print(f"[Cảnh {self.index}] Bắt đầu cấu hình thông số tạo video: {fs}")
                     # Mở menu cài đặt - Nút này có text thay đổi tuỳ theo cấu hình hiện tại (vd: "Nano Banana 2 x2" hoặc "Video 1x")
-                    setting_btn = page.locator('button', has_text=re.compile(r'1x|x2|x3|x4|Video|Hình ảnh|Veo|Imagen|Nano', re.IGNORECASE)).last
+                    setting_btn = page.locator('button', has_text=re.compile(r'1x|x2|x3|x4|4s|6s|8s|10s|Video|Hình ảnh|Veo|Omni|Imagen|Nano', re.IGNORECASE)).last
                     setting_btn.click(timeout=10000)
                     if self._stop_event.wait(1): raise InterruptedError("Đã dừng")
                     
@@ -652,12 +653,15 @@ class MultiThread(QThread):
                             locator.click(timeout=2000)
                         else:
                             # Nếu không thấy mô hình, thử bấm mở dropdown chọn mô hình trước
-                            model_btn = page.locator('button:has-text("Veo"), button:has-text("Imagen")').last
+                            model_btn = page.locator('button:has-text("Veo"), button:has-text("Omni"), button:has-text("Imagen")').last
                             model_btn.click(timeout=2000)
                             if self._stop_event.wait(0.5): raise InterruptedError("Đã dừng")
                             page.get_by_text(pattern).last.click(timeout=2000)
                     except Exception as e:
                         print(f"[Cảnh {self.index}] ⚠️ Lỗi khi chọn Mô hình AI '{fs['ai_model']}': {e}")
+
+                    # Chọn thời gian video (4s / 6s / 8s / 10s)
+                    click_setting(fs.get("duration", "8s"))
                     
                     print(f"[Cảnh {self.index}] Đã cấu hình xong thông số.")
                 except Exception as e:
@@ -1745,6 +1749,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "FLOW_ASPECT_RATIO": self.cb_flow_aspect_ratio,
             "FLOW_GEN_COUNT": self.cb_flow_gen_count,
             "FLOW_AI_MODEL": self.cb_flow_ai_model,
+            "FLOW_DURATION": self.cb_flow_duration,
             "KOL_AI_LANG": self.kie_cb_lang,
             "KOL_AI_REF_IMAGE": self.kie_le_kol_ref_image,
             "KOL_AI_PRODUCT_IMAGE": self.kie_le_product_image,
@@ -2092,6 +2097,12 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 "ty_le_copy": self.cb_copy_ratio.currentText(),
                 "so_canh": str(input_soluong),
                 "giong_nhan_vat": self.te_voice_desc.toPlainText().strip(),
+                "loai_noi_dung": self.cb_flow_content_type.currentText(),
+                "loai_khung": self.cb_flow_frame_type.currentText(),
+                "ty_le_khung_hinh": self.cb_flow_aspect_ratio.currentText(),
+                "so_lan_tao": self.cb_flow_gen_count.currentText(),
+                "mo_hinh_ai": self.cb_flow_ai_model.currentText(),
+                "thoi_gian_video": self.cb_flow_duration.currentText(),
             }
         else:
             payload = {
@@ -2416,6 +2427,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
                 "aspect_ratio": self.cb_flow_aspect_ratio.currentText(),
                 "gen_count": self.cb_flow_gen_count.currentText(),
                 "ai_model": self.cb_flow_ai_model.currentText(),
+                "duration": self.cb_flow_duration.currentText(),
             }
 
             save_dir = self.le_folder.text().strip() if hasattr(self, 'le_folder') else ""
@@ -2828,6 +2840,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
         ty_le_khung_hinh = self.cb_flow_aspect_ratio.currentText() if hasattr(self, 'cb_flow_aspect_ratio') else ""
         so_lan_tao = self.cb_flow_gen_count.currentText() if hasattr(self, 'cb_flow_gen_count') else ""
         mo_hinh_ai = self.cb_flow_ai_model.currentText() if hasattr(self, 'cb_flow_ai_model') else ""
+        thoi_gian_video = self.cb_flow_duration.currentText() if hasattr(self, 'cb_flow_duration') else ""
 
         # Validate: Kie AI API Key bắt buộc
         if not kie_api_key:
@@ -2864,6 +2877,7 @@ class Manager(QtWidgets.QMainWindow, Ui_Widget):
             "ty_le_khung_hinh": ty_le_khung_hinh,
             "so_lan_tao": so_lan_tao,
             "mo_hinh_ai": mo_hinh_ai,
+            "thoi_gian_video": thoi_gian_video,
         }
 
         def _kie_ref_worker(data):

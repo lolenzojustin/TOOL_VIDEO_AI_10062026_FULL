@@ -15,6 +15,7 @@ import re
 import os
 import time
 import threading
+import base64
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
@@ -61,271 +62,562 @@ class KieAiVideoThread(QThread):
         self._stop_event = threading.Event()
 
     def run(self):
-        """
-        Luồng chính xử lý tự động tạo video bằng Kie AI.
-        
-        Quy trình:
-          1. Kiểm tra thông tin đầu vào (profile_id)
-          2. Mở Profile GPM
-          3. Kết nối Playwright vào trình duyệt
-          4. Truy cập trang Kie AI
-          5. Chuẩn bị ảnh KOL/sản phẩm
-          6. Nhập prompt và gửi tạo video
-          7. Chờ kết quả và tải video về
-          8. Đóng trình duyệt
-        """
+        return self._run_google_flow_kol()
+
+    def _run_google_flow_kol(self):
+        """Run the KOL AI workflow on Google Flow, following KOL_AI_FLOW_SCRIPT.md."""
         gpm = Gpm()
         profile_id = self.profile_id
-
+        browser = None
         status = None
         response_data = "-"
+
         try:
-            # ── Bước 1: Kiểm tra ID Profile GPM ──
-            if not self.is_running:
-                status = "Đã dừng"
-                return
+            if sync_playwright is None:
+                raise RuntimeError("Playwright chua duoc cai dat trong moi truong nay.")
             if not profile_id:
-                raise RuntimeError("Chưa có ID Profile cho cảnh này.")
-            # ── Bước 2: Mở Profile GPM ──
-            if not self.is_running:
-                status = "Đã dừng"
-                return
-            self.record.emit(self.index, "Đang mở GPM", "-")
+                raise RuntimeError("Chua co ID Profile cho canh nay.")
+            if not self.reference_image_path or not os.path.exists(self.reference_image_path):
+                raise RuntimeError("Khong tim thay file Hinh tham chieu da chieu cua KOL.")
+
+            product_image_path = self.flow_settings.get("product_image_path", "")
+            if not product_image_path or not os.path.exists(product_image_path):
+                raise RuntimeError("Khong tim thay file Hinh anh san pham.")
+
+            self._emit("Dang mo GPM")
             remote_addr = gpm.open_profile(
                 apiurl_Gpm=self.api_url_gpm,
                 id_profile=profile_id,
                 win_pos=self.win_pos,
                 win_size=self.win_size
             )
-
             if not remote_addr:
-                raise RuntimeError("open_profile trả về None — GPM chưa khởi động hoặc API URL GPM sai.")
+                raise RuntimeError("open_profile tra ve None. Hay kiem tra GPM API URL va trang thai GPM.")
 
-            # ── Bước 3: Kết nối Playwright ──
-            if not self.is_running:
-                status = "Đã dừng"
-                return
-            self.record.emit(self.index, "Đang chạy Playwright", "-")
+            self._emit("Dang chay Playwright")
             with sync_playwright() as p:
-                browser = None
-                for attempt in range(5):
+                for attempt in range(1, 6):
+                    self._check_stop()
                     try:
                         browser = p.chromium.connect_over_cdp(f"http://{remote_addr}")
                         break
-                    except Exception as e:
-                        print(f"[Kie AI - Cảnh {self.index}] Lỗi kết nối CDP (lần {attempt+1}), thử lại sau 2s...")
+                    except Exception:
+                        self._log(f"Khong ket noi duoc CDP lan {attempt}, thu lai sau 2s")
                         if self._stop_event.wait(2):
                             raise InterruptedError("Đã dừng")
+
                 if not browser:
-                    raise RuntimeError("Không thể kết nối Playwright với trình duyệt.")
+                    raise RuntimeError("Khong the ket noi Playwright voi trinh duyet GPM.")
 
-                context = browser.contexts[0]
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
                 page = context.pages[0] if context.pages else context.new_page()
+                self._apply_viewport(page)
 
-                # Áp dụng viewport size
+                self._emit("Dang vao Google Flow")
                 try:
-                    numbers = re.findall(r'\d+', str(self.win_size))
-                    if len(numbers) >= 2:
-                        w, h = int(numbers[0]), int(numbers[1])
-                        vp_w = w
-                        vp_h = max(300, h - 85)
-                        page.set_viewport_size({"width": vp_w, "height": vp_h})
-                except Exception as e:
-                    print(f"[Kie AI - Cảnh {self.index}] Lỗi set viewport: {e}")
-
-                # ── Bước 4: Truy cập trang Kie AI ──
-                self._check_stop()
-                self.record.emit(self.index, "Đang truy cập Kie AI", "-")
-
-                # ═══════════════════════════════════════════════════════════
-                # TODO: THAY ĐỔI URL TRANG KIE AI VÀ LOGIC TỰ ĐỘNG Ở ĐÂY
-                # ═══════════════════════════════════════════════════════════
-                # Ví dụ: page.goto("https://kie.ai/...", timeout=60000, wait_until="domcontentloaded")
-                #
-                # Hiện tại dùng placeholder — bạn cần điền URL thực tế của Kie AI
-                kie_ai_url = "https://kie.ai"
-                try:
-                    page.goto(kie_ai_url, timeout=60000, wait_until="domcontentloaded")
+                    page.goto("https://labs.google/fx/vi/tools/flow", wait_until="domcontentloaded", timeout=60000)
                 except PlaywrightTimeoutError:
-                    print(f"[Kie AI - Cảnh {self.index}] goto timeout, tiếp tục...")
+                    self._log("Google Flow load cham, tiep tuc voi trang hien tai")
+                page.wait_for_timeout(3000)
 
-                # Tự động zoom nếu viewport nhỏ
-                try:
-                    numbers = re.findall(r'\d+', str(self.win_size))
-                    if len(numbers) >= 2:
-                        vp_w = int(numbers[0])
-                        if vp_w < 800:
-                            zoom_level = round(vp_w / 800, 2)
-                            zoom_level = max(0.3, min(zoom_level, 1.0))
-                            page.evaluate(f"document.body.style.zoom = '{zoom_level}'")
-                except Exception:
-                    pass
+                self._close_optional_popups(page)
+                self._open_new_flow_project(page)
+                self._configure_flow_settings(page)
 
-                self._check_stop()
+                self._upload_image_to_prompt(page, self.reference_image_path, "anh KOL")
+                self._upload_image_to_prompt(page, product_image_path, "anh san pham")
 
-                # ── Bước 5: Chuẩn bị ảnh KOL/sản phẩm ──
-                self.record.emit(self.index, "Đang chuẩn bị ảnh KOL/sản phẩm", "-")
-                product_image_path = self.flow_settings.get("product_image_path", "")
-                if product_image_path:
-                    print(f"[KOL AI - Cảnh {self.index}] Ảnh sản phẩm: {product_image_path}")
+                self._fill_prompt_and_send(page)
+                self._wait_for_video_ready(page, timeout_seconds=600)
 
-                self._check_stop()
-
-                # ── Bước 6: Upload ảnh KOL (nếu có) ──
-                if self.reference_image_path and os.path.exists(self.reference_image_path):
-                    self.record.emit(self.index, "Đang upload ảnh KOL", "-")
-                    # ═══════════════════════════════════════════════════════════
-                    # TODO: LOGIC UPLOAD ẢNH THAM CHIẾU LÊN KIE AI
-                    # ═══════════════════════════════════════════════════════════
-                    # Ví dụ:
-                    # file_input = page.locator('input[type="file"]').first
-                    # file_input.set_input_files(self.reference_image_path)
-                    print(f"[KOL AI - Cảnh {self.index}] Ảnh KOL: {self.reference_image_path}")
-
-                self._check_stop()
-
-                # ── Bước 7: Nhập prompt và gửi tạo video ──
-                self.record.emit(self.index, "Đang nhập prompt", "-")
-                # ═══════════════════════════════════════════════════════════
-                # TODO: LOGIC NHẬP PROMPT VÀ BẤM TẠO VIDEO
-                # ═══════════════════════════════════════════════════════════
-                # Ví dụ:
-                # prompt_input = page.locator('textarea').first
-                # prompt_input.fill(self.prompt_text)
-                # page.locator('button:has-text("Generate")').click()
-                print(f"[Kie AI - Cảnh {self.index}] Prompt: {self.prompt_text[:50]}...")
-
-                if self._stop_event.wait(1):
-                    raise InterruptedError("Đã dừng")
-
-                # ── Bước 8: Chờ quá trình tạo video hoàn tất ──
-                self.record.emit(self.index, "Đang chờ Kie AI tạo video", "-")
-                # ═══════════════════════════════════════════════════════════
-                # TODO: LOGIC CHỜ VIDEO ĐƯỢC TẠO XONG
-                # ═══════════════════════════════════════════════════════════
-                # Ví dụ vòng lặp chờ (giống pattern MultiThread):
-                timeout = 300  # 5 phút
-                elapsed = 0
-                has_started_generating = False
-                disappear_count = 0
-
-                while elapsed < timeout:
-                    self._check_stop()
-
-                    # Kiểm tra lỗi
-                    # try:
-                    #     error_loc = page.locator('text="Error"').first
-                    #     if error_loc.is_visible():
-                    #         raise RuntimeError("Kie AI báo lỗi khi tạo video.")
-                    # except RuntimeError:
-                    #     raise
-                    # except Exception:
-                    #     pass
-
-                    # Kiểm tra tiến trình
-                    # try:
-                    #     is_generating = page.locator('[role="progressbar"]').first.is_visible()
-                    # except Exception:
-                    #     is_generating = False
-
-                    # if is_generating:
-                    #     has_started_generating = True
-                    #     disappear_count = 0
-                    # else:
-                    #     if has_started_generating:
-                    #         disappear_count += 2
-                    #         if disappear_count >= 16:
-                    #             break
-                    #     elif elapsed > 60:
-                    #         break
-
-                    if self._stop_event.wait(2):
-                        raise InterruptedError("Đã dừng")
-                    elapsed += 2
-
-                    # Tạm thời break ngay (xóa dòng này khi đã có logic thật)
-                    break
-
-                # ── Bước 9: Tải video về máy ──
-                self.record.emit(self.index, "Đang tải video", "-")
+                self._emit("Dang tai video")
                 save_dir = self.save_dir if self.save_dir else os.path.join(os.getcwd(), "videos_da_tao")
-                if not os.path.exists(save_dir):
-                    try:
-                        os.makedirs(save_dir, exist_ok=True)
-                    except Exception:
-                        pass
+                os.makedirs(save_dir, exist_ok=True)
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                save_path = os.path.join(save_dir, f"kol_ai_scene_{self.index:03d}_{timestamp}.mp4")
+                thumbnail_path = os.path.join(save_dir, f"kol_ai_scene_{self.index:03d}_{timestamp}_thumb.png")
 
-                safe_prompt = re.sub(r'[\\/*?:"<>|\n\r]', " ", self.prompt_text)
-                safe_prompt = safe_prompt[:30].strip() if safe_prompt else "video"
-                filename = f"kie_canh_{self.index}_{safe_prompt}.mp4"
-                save_path = os.path.join(save_dir, filename)
+                thumbnail_path = self._capture_thumbnail(page, thumbnail_path)
+                self._download_latest_video(context, page, save_path)
 
-                # ═══════════════════════════════════════════════════════════
-                # TODO: LOGIC TẢI VIDEO TỪ KIE AI VỀ MÁY
-                # ═══════════════════════════════════════════════════════════
-                # Ví dụ (giống pattern MultiThread):
-                # video_url = page.evaluate('''...tìm URL video...''')
-                # if video_url.startswith('blob:'):
-                #     base64_data = page.evaluate(f'''fetch("{video_url}")...''')
-                #     ...ghi file...
-                # else:
-                #     resp = context.request.get(video_url)
-                #     with open(save_path, "wb") as f:
-                #         f.write(resp.body())
+                emit_data = f"{save_path}|{thumbnail_path}" if thumbnail_path else save_path
+                self.record.emit(self.index, "Tải video thành công", emit_data)
+                self._log(f"Tai video thanh cong: {save_path}")
 
-                # Tạm thời: Ghi file placeholder (xóa khi có logic thật)
-                print(f"[Kie AI - Cảnh {self.index}] TODO: Tải video về {save_path}")
-
-                # Chụp thumbnail (giống pattern MultiThread)
-                thumbnail_path = ""
-                # try:
-                #     thumb_filename = f"kie_canh_{self.index}_{safe_prompt}_thumb.png"
-                #     t_path = os.path.join(save_dir, thumb_filename)
-                #     page.wait_for_timeout(3000)
-                #     ...chụp screenshot...
-                #     thumbnail_path = t_path
-                # except Exception:
-                #     pass
-
-                # Emit kết quả thành công
-                # emit_data = f"{save_path}|{thumbnail_path}" if thumbnail_path else save_path
-                # self.record.emit(self.index, "Tải video thành công", emit_data)
-
-                # Sau khi xong, đánh dấu hoàn thành
                 status = "Hoàn thành"
-                print(f"[Kie AI - Cảnh {self.index}] ✅ Hoàn thành quy trình Kie AI")
-                browser.close()
 
         except InterruptedError:
-            print(f"[Kie AI - Cảnh {self.index}] Luồng đã bị ngắt bởi người dùng.")
             status = "Đã dừng"
             response_data = "-"
         except PlaywrightError as e:
             if "TargetClosedError" in str(e.__class__) or "has been closed" in str(e):
-                print(f"[Kie AI - Cảnh {self.index}] Trình duyệt đã bị đóng.")
                 status = "Đã dừng"
-                response_data = "-"
             else:
                 import traceback
-                print(f"[Kie AI - Cảnh {self.index}] Lỗi Playwright:\n{traceback.format_exc()}")
+                self._log(f"Loi Playwright:\n{traceback.format_exc()}")
                 status = f"Lỗi: {e}"
-                response_data = "-"
+            response_data = "-"
         except Exception as e:
             if "TargetClosedError" in str(e.__class__) or "has been closed" in str(e):
-                print(f"[Kie AI - Cảnh {self.index}] Trình duyệt đã bị đóng.")
                 status = "Đã dừng"
-                response_data = "-"
             else:
                 import traceback
-                print(f"[Kie AI - Cảnh {self.index}] EXCEPTION:\n{traceback.format_exc()}")
+                self._log(f"EXCEPTION:\n{traceback.format_exc()}")
                 status = f"Lỗi: {e}"
-                response_data = "-"
+            response_data = "-"
         finally:
-            # Đóng profile GPM sau khi làm xong
+            try:
+                if browser:
+                    browser.close()
+            except Exception:
+                pass
             if profile_id:
                 self._cleanup_profile(gpm, profile_id)
             if status:
                 self.record.emit(self.index, status, response_data)
+
+    def _log(self, message):
+        print(f"[KOL AI - Canh {self.index}] {message}")
+
+    def _emit(self, status, data="-"):
+        self._log(status)
+        self.record.emit(self.index, status, data)
+
+    def _apply_viewport(self, page):
+        try:
+            numbers = re.findall(r"\d+", str(self.win_size))
+            if len(numbers) >= 2:
+                width, height = int(numbers[0]), int(numbers[1])
+                page.set_viewport_size({"width": width, "height": max(300, height - 85)})
+                if width < 800:
+                    zoom_level = max(0.3, min(round(width / 800, 2), 1.0))
+                    page.evaluate(f"document.body.style.zoom = '{zoom_level}'")
+        except Exception as e:
+            self._log(f"Khong set duoc viewport: {e}")
+
+    def _close_optional_popups(self, page):
+        patterns = [
+            r"Got it|I agree|Accept|Continue|Skip|Close",
+            r"Dong|Đóng|Da hieu|Đã hiểu|Chap nhan|Chấp nhận|Bo qua|Bỏ qua|Tiep tuc|Tiếp tục",
+        ]
+        for pattern in patterns:
+            try:
+                btn = page.get_by_role("button", name=re.compile(pattern, re.I)).first
+                if btn.is_visible(timeout=1200):
+                    btn.click(timeout=1500)
+                    page.wait_for_timeout(500)
+            except Exception:
+                pass
+
+    def _click_text(self, page, pattern, timeout=8000):
+        locators = [
+            lambda: page.get_by_role("button", name=re.compile(pattern, re.I)).last,
+            lambda: page.get_by_text(re.compile(pattern, re.I)).last,
+            lambda: page.locator(f"text=/{pattern}/i").last,
+        ]
+        last_error = None
+        for make_locator in locators:
+            self._check_stop()
+            try:
+                locator = make_locator()
+                locator.click(timeout=timeout)
+                return True
+            except Exception as e:
+                last_error = e
+        if last_error:
+            self._log(f"Khong click duoc text /{pattern}/: {last_error}")
+        return False
+
+    def _open_new_flow_project(self, page):
+        self._emit("Dang bam Du an moi")
+        page.wait_for_timeout(2000)
+        if self._click_text(page, r"Dự án mới|Du an moi|New project|New", timeout=30000):
+            page.wait_for_timeout(5000)
+            return
+
+        selectors = [
+            'button:has-text("+")',
+            '[aria-label*="New"]',
+            '[aria-label*="Dự án"]',
+            '[aria-label*="Du an"]',
+            '[data-testid*="new"]',
+        ]
+        for selector in selectors:
+            try:
+                page.locator(selector).last.click(timeout=5000)
+                page.wait_for_timeout(5000)
+                return
+            except Exception:
+                pass
+        raise RuntimeError("Khong tim thay nut Du an moi tren Google Flow.")
+
+    def _configure_flow_settings(self, page):
+        settings = [
+            self.flow_settings.get("content_type", "Video"),
+            self.flow_settings.get("frame_type", ""),
+            self.flow_settings.get("aspect_ratio", ""),
+            self.flow_settings.get("gen_count", ""),
+            self.flow_settings.get("ai_model", ""),
+            self.flow_settings.get("duration", ""),
+        ]
+        settings = [str(value).strip() for value in settings if str(value).strip()]
+        if not settings:
+            return
+
+        self._emit("Dang cau hinh Flow")
+        opened = False
+        for selector in [
+            'button:has-text("Video")',
+            'button:has-text("Hình ảnh")',
+            'button:has-text("Hinh anh")',
+            'button:has-text("8s")',
+            'button:has-text("1x")',
+            'button:has-text("x4")',
+            '[aria-label*="Settings"]',
+            '[aria-label*="Cài đặt"]',
+        ]:
+            try:
+                page.locator(selector).last.click(timeout=2500)
+                opened = True
+                page.wait_for_timeout(600)
+                break
+            except Exception:
+                pass
+
+        if not opened:
+            self._log("Khong mo duoc menu cau hinh Flow, tiep tuc voi cau hinh mac dinh")
+
+        for value in settings:
+            try:
+                pattern = re.compile(rf"^\s*{re.escape(value)}\s*$", re.I)
+                page.get_by_text(pattern).last.click(timeout=2500)
+                self._log(f"Da chon setting Flow: {value}")
+                page.wait_for_timeout(500)
+            except Exception as e:
+                self._log(f"Khong chon duoc setting Flow '{value}': {e}")
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+
+    def _open_agent_image_picker(self, page):
+        if not self._click_prompt_plus(page, timeout_ms=2500):
+            self._log("Khong thay dau + san tren prompt, thu bam Tac nhan de hien dau +")
+            if not self._click_text(page, r"Tác nhân|Tac nhan|Agent", timeout=8000):
+                self._log("Khong thay nut Tac nhan, tiep tuc thu tim dau +")
+            if not self._click_prompt_plus(page, timeout_ms=5000):
+                raise RuntimeError("Khong tim thay dau + trong khu vuc prompt cua Google Flow.")
+
+    def _click_image_upload_option(self, page, timeout=8000):
+        return self._click_text(page, r"Hình ảnh|Hinh anh|Image", timeout=timeout)
+
+    def _click_prompt_plus(self, page, timeout_ms=4000):
+        end_time = time.time() + (timeout_ms / 1000)
+        while time.time() < end_time:
+            self._check_stop()
+            clicked = page.evaluate("""
+                () => {
+                    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+                    const candidates = Array.from(document.querySelectorAll('button, [role="button"]'));
+                    const visible = candidates
+                        .map((el) => {
+                            const rect = el.getBoundingClientRect();
+                            const text = (el.innerText || el.textContent || '').trim();
+                            const aria = (el.getAttribute('aria-label') || '').trim();
+                            const title = (el.getAttribute('title') || '').trim();
+                            const label = `${text} ${aria} ${title}`;
+                            return {el, rect, label};
+                        })
+                        .filter((item) => {
+                            const style = window.getComputedStyle(item.el);
+                            if (style.visibility === 'hidden' || style.display === 'none') return false;
+                            if (item.rect.width <= 0 || item.rect.height <= 0) return false;
+                            if (item.rect.bottom < 0 || item.rect.top > viewportHeight) return false;
+                            return /(^|\\s)\\+(\\s|$)|Add|Thêm|Them/i.test(item.label);
+                        });
+
+                    const promptArea = visible
+                        .filter((item) => item.rect.top > viewportHeight * 0.45)
+                        .sort((a, b) => b.rect.top - a.rect.top || a.rect.left - b.rect.left);
+                    const target = promptArea[0] || visible.sort((a, b) => b.rect.top - a.rect.top)[0];
+                    if (!target) return false;
+
+                    target.el.scrollIntoView({block: 'center', inline: 'center'});
+                    target.el.click();
+                    return true;
+                }
+            """)
+            if clicked:
+                page.wait_for_timeout(700)
+                return True
+            page.wait_for_timeout(300)
+        return False
+
+    def _upload_image_to_prompt(self, page, image_path, label):
+        self._check_stop()
+        self._emit(f"Dang upload {label}")
+        if not image_path or not os.path.exists(image_path):
+            raise RuntimeError(f"Khong tim thay file {label}: {image_path}")
+
+        uploaded = False
+        self._open_agent_image_picker(page)
+
+        try:
+            file_input = page.locator('input[type="file"]').last
+            file_input.set_input_files(image_path, timeout=2500)
+            uploaded = True
+        except Exception:
+            pass
+
+        if uploaded:
+            self._wait_upload_ready(page)
+            self._log(f"Da upload {label}: {image_path}")
+            return
+
+        try:
+            with page.expect_file_chooser(timeout=5000) as fc_info:
+                if not self._click_image_upload_option(page, timeout=5000):
+                    raise RuntimeError("Khong tim thay nut Hinh anh.")
+            fc_info.value.set_files(image_path)
+            uploaded = True
+        except Exception:
+            pass
+
+        if not uploaded:
+            try:
+                self._click_image_upload_option(page, timeout=3000)
+            except Exception:
+                pass
+
+            try:
+                file_input = page.locator('input[type="file"]').last
+                file_input.set_input_files(image_path, timeout=6000)
+                uploaded = True
+            except Exception as e:
+                raise RuntimeError(f"Khong upload duoc {label}: {e}")
+
+        self._wait_upload_ready(page)
+        self._log(f"Da upload {label}: {image_path}")
+
+    def _wait_upload_ready(self, page, timeout_seconds=90):
+        start = time.time()
+        while time.time() - start < timeout_seconds:
+            self._check_stop()
+            try:
+                busy = page.locator('[role="progressbar"], text=/Uploading|Đang tải|Dang tai|Processing|Đang xử lý|Dang xu ly/i').first
+                if busy.is_visible(timeout=800):
+                    page.wait_for_timeout(1200)
+                    continue
+            except Exception:
+                pass
+            page.wait_for_timeout(1200)
+            return
+        raise RuntimeError("Upload anh qua thoi gian cho phep.")
+
+    def _fill_prompt_and_send(self, page):
+        self._emit("Dang nhap prompt")
+        prompt = (self.prompt_text or "").strip()
+        if not prompt:
+            raise RuntimeError("Prompt cua canh dang rong.")
+
+        prompt_box = None
+        for selector in [
+            'textarea:visible',
+            'div[contenteditable="true"]:visible',
+            '[role="textbox"]:visible',
+        ]:
+            try:
+                loc = page.locator(selector).last
+                loc.click(timeout=5000)
+                prompt_box = loc
+                break
+            except Exception:
+                pass
+        if prompt_box is None:
+            raise RuntimeError("Khong tim thay o nhap prompt tren Google Flow.")
+
+        try:
+            prompt_box.fill(prompt, timeout=5000)
+        except Exception:
+            page.keyboard.insert_text(prompt)
+
+        page.wait_for_timeout(500)
+        sent = False
+        for key in ["Enter", "Control+Enter"]:
+            try:
+                prompt_box.press(key)
+                sent = True
+                page.wait_for_timeout(2500)
+                break
+            except Exception:
+                pass
+
+        if not sent:
+            for selector in [
+                '[aria-label*="Send"]',
+                '[aria-label*="Gửi"]',
+                '[aria-label*="Gui"]',
+                'button:has-text("Generate")',
+                'button:has-text("Tạo")',
+                'button:has-text("Tao")',
+            ]:
+                try:
+                    page.locator(selector).last.click(timeout=4000)
+                    sent = True
+                    break
+                except Exception:
+                    pass
+        if not sent:
+            raise RuntimeError("Khong gui duoc prompt tao video.")
+
+    def _wait_for_video_ready(self, page, timeout_seconds=600):
+        self._emit("Dang tao video")
+        started = False
+        quiet_seconds = 0
+        start = time.time()
+
+        while time.time() - start < timeout_seconds:
+            self._check_stop()
+
+            try:
+                error_loc = page.locator('text=/Không thành công|Khong thanh cong|Rất tiếc|Rat tiec|failed|error/i').first
+                if error_loc.is_visible(timeout=1000):
+                    raise RuntimeError("Google Flow bao loi khi tao video.")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+
+            if self._find_video_url(page)[0]:
+                if started:
+                    quiet_seconds += 2
+                    if quiet_seconds >= 8:
+                        self._log("Da thay video output")
+                        return
+                else:
+                    started = True
+
+            generating = False
+            try:
+                progress = page.locator('[role="progressbar"], text=/^\\d{1,3}%$/, text=/Đang|Dang|Generating|In queue|hàng đợi|hang doi/i').first
+                generating = progress.is_visible(timeout=800)
+            except Exception:
+                pass
+            if generating:
+                started = True
+                quiet_seconds = 0
+
+            if self._stop_event.wait(2):
+                raise InterruptedError("Đã dừng")
+
+        raise RuntimeError("Cho Google Flow tao video qua thoi gian cho phep.")
+
+    def _find_video_url(self, page):
+        for frame in page.frames:
+            try:
+                vids = frame.locator("video").all()
+                for vid in reversed(vids):
+                    url = vid.evaluate("el => el.src || (el.querySelector('source') ? el.querySelector('source').src : '')")
+                    if url:
+                        return url, frame
+            except Exception:
+                pass
+
+        for frame in page.frames:
+            try:
+                url = frame.evaluate("""
+                    () => {
+                        function findVideos(root) {
+                            let vids = Array.from(root.querySelectorAll('video'));
+                            for (const el of root.querySelectorAll('*')) {
+                                if (el.shadowRoot) vids = vids.concat(findVideos(el.shadowRoot));
+                            }
+                            return vids;
+                        }
+                        const videos = findVideos(document);
+                        for (let i = videos.length - 1; i >= 0; i--) {
+                            const v = videos[i];
+                            const src = v.src || (v.querySelector('source') ? v.querySelector('source').src : '');
+                            if (src) return src;
+                        }
+                        return null;
+                    }
+                """)
+                if url:
+                    return url, frame
+            except Exception:
+                pass
+        return None, None
+
+    def _capture_thumbnail(self, page, thumbnail_path):
+        try:
+            page.wait_for_timeout(2500)
+            box = page.evaluate("""
+                () => {
+                    function findVideos(root) {
+                        let vids = Array.from(root.querySelectorAll('video'));
+                        for (const el of root.querySelectorAll('*')) {
+                            if (el.shadowRoot) vids = vids.concat(findVideos(el.shadowRoot));
+                        }
+                        return vids;
+                    }
+                    const videos = findVideos(document);
+                    for (let i = videos.length - 1; i >= 0; i--) {
+                        let el = videos[i];
+                        while (el && el !== document.body) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 100 && rect.height > 100) {
+                                el.scrollIntoView({block: 'center', inline: 'center'});
+                                const finalRect = el.getBoundingClientRect();
+                                return {x: finalRect.x, y: finalRect.y, width: finalRect.width, height: finalRect.height};
+                            }
+                            el = el.parentElement || (el.getRootNode() && el.getRootNode().host);
+                        }
+                    }
+                    return null;
+                }
+            """)
+            page.wait_for_timeout(800)
+            if box:
+                page.screenshot(path=thumbnail_path, clip=box)
+                return thumbnail_path
+        except Exception as e:
+            self._log(f"Khong chup duoc thumbnail: {e}")
+        return ""
+
+    def _download_latest_video(self, context, page, save_path):
+        video_url, target_frame = self._find_video_url(page)
+        if not video_url:
+            raise RuntimeError("Khong tim thay video output tren Google Flow.")
+
+        self._log(f"Da lay URL video: {video_url[:90]}...")
+        if video_url.startswith("blob:"):
+            frame = target_frame or page
+            base64_data = frame.evaluate(f"""
+                async () => {{
+                    const response = await fetch("{video_url}");
+                    const blob = await response.blob();
+                    return await new Promise((resolve, reject) => {{
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(blob);
+                    }});
+                }}
+            """)
+            if not base64_data or "," not in base64_data:
+                raise RuntimeError("Du lieu blob video tra ve khong hop le.")
+            _, encoded = base64_data.split(",", 1)
+            with open(save_path, "wb") as f:
+                f.write(base64.b64decode(encoded))
+            return
+
+        resp = context.request.get(video_url)
+        if not resp.ok:
+            raise RuntimeError(f"Loi tai video HTTP {resp.status} - {resp.status_text}")
+        with open(save_path, "wb") as f:
+            f.write(resp.body())
+        return
 
     def _cleanup_profile(self, gpm, profile_id):
         """Dọn dẹp: đóng profile GPM sau khi hoàn tất."""
@@ -478,6 +770,23 @@ def _startThreadKieAi(self):
     self.running_threads = input_soluong
     self._active_run_prompt_boxes = self._get_active_scene_prompt_boxes()
 
+    missing_prompt_scenes = []
+    for i in range(1, input_soluong + 1):
+        if (i - 1) >= len(self._active_run_prompt_boxes):
+            missing_prompt_scenes.append(str(i))
+            continue
+        if not self._active_run_prompt_boxes[i - 1].toPlainText().strip():
+            missing_prompt_scenes.append(str(i))
+
+    if missing_prompt_scenes:
+        QMessageBox.warning(
+            self,
+            "Thieu prompt cho canh",
+            "Vui long bam 'Bat dau phan tich tao Prompt' truoc, hoac nhap prompt thu cong cho cac canh: "
+            + ", ".join(missing_prompt_scenes)
+        )
+        return
+
     # Đổi nút sang trạng thái đang chạy
     self._set_veo3_btn_running(True)
     self._animate_loading_button()
@@ -509,6 +818,7 @@ def _startThreadKieAi(self):
         "aspect_ratio": self.cb_flow_aspect_ratio.currentText(),
         "gen_count": self.cb_flow_gen_count.currentText(),
         "ai_model": self.cb_flow_ai_model.currentText(),
+        "duration": self.cb_flow_duration.currentText(),
         "kol_reference_image_path": reference_image_path,
         "product_image_path": product_image_path,
     }

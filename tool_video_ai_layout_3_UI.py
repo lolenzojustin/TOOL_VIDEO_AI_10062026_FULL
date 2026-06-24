@@ -226,8 +226,13 @@ class Ui_Widget(object):
         lv.addWidget(self.cb_flow_gen_count)
 
         lv.addWidget(self._lbl("Mô hình AI", "grpLabel"))
-        self.cb_flow_ai_model = self._combo(["Veo 3.1 - Lite", "Veo 3.0", "Veo 2.0"])
+        self.cb_flow_ai_model = self._combo(["Veo 3.1 - Lite", "Omni Flash", "Veo 3.0", "Veo 2.0"])
         lv.addWidget(self.cb_flow_ai_model)
+
+        lv.addWidget(self._lbl("Thời gian video", "grpLabel"))
+        self.cb_flow_duration = self._combo(["4s", "6s", "8s", "10s"])
+        self.cb_flow_duration.setCurrentText("8s")
+        lv.addWidget(self.cb_flow_duration)
 
         lv.addStretch()
 
@@ -1013,8 +1018,12 @@ class Ui_Widget(object):
         #analyzeBtn:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #3b0764, stop:1 #7c3aed); }}
 
         #newBtn {{
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #7c3aed, stop:1 #c084fc);
-            border: none; color: white; font-size: {fs_sm}px;
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ec4899, stop:1 #f43f5e);
+            border: none; color: white; font-size: {fs_sm}px; font-weight: bold;
+            border-radius: {_s(4,sc)}px;
+        }}
+        #newBtn:hover {{
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #db2777, stop:1 #e11d48);
         }}
 
         #updateBtn {{
