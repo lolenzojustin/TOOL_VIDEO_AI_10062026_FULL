@@ -12,7 +12,7 @@ import subprocess
 from PyQt5 import QtCore, QtWidgets
 
 API_URL = "https://thangdz.com/api/categories/48576c9c-6da3-4690-885c-71b18ac49c3d"
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.0.12"
 
 def get_base_path():
     """Lấy thư mục gốc chứa ứng dụng."""
@@ -139,6 +139,10 @@ move /y "{new_exe_path}" "{target_exe_path}"
 
 if exist "{target_exe_path}" (
     echo Cap nhat thanh cong! Dang khoi chay lai ung dung...
+    set PYINSTALLER_RESET_ENVIRONMENT=1
+    set _PYI_ARCHIVE_FILE=
+    set _PYI_APPLICATION_HOME_DIR=
+    set _PYI_PARENT_PROCESS_LEVEL=
     start "" "{target_exe_path}"
 ) else (
     echo Loi: Khong the di chuyen file cap nhat moi.

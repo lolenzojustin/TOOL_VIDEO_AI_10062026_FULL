@@ -38,7 +38,7 @@ def build_onefile():
     print("[*] Performing Version Validation...")
     
     # Read APP_VERSION
-    app_version = "1.0.11" # default fallback
+    app_version = "1.0.12" # default fallback
     try:
         sys.path.insert(0, project_dir)
         import api_check_version
