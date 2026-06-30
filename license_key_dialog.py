@@ -151,7 +151,7 @@ class LicenseKeyDialog(QtWidgets.QDialog):
         Gọi API active License Key.
         Trả về (success: bool, message: str)
         """
-        url = "https://thangdz.com/api/activation/activate"
+        url = "https://vuihappy.com/api/activation/activate"
         payload = {
             "license_key": key,
             "device_id": self.device_id,
@@ -190,7 +190,7 @@ class LicenseKeyDialog(QtWidgets.QDialog):
         Gọi API check License Key.
         Trả về (success: bool, status: str)
         """
-        url = "https://thangdz.com/api/activation/check"
+        url = "https://vuihappy.com/api/activation/check"
         payload = {
             "license_key": key,
             "device_id": self.device_id,
